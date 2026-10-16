@@ -158,7 +158,13 @@ def handle_bot_message(chat_id: int, text: str) -> str:
     lower = stripped.lower()
     command = lower.split()[0].split("@", 1)[0] if lower.startswith("/") else ""
 
-    if command in {"/help", "/start"}:
+    if command == "/start":
+        return (
+            "What did you do today?\n"
+            "Use /log to record work (project → ticket? → your paragraph).\n"
+            "/today shows today's journal. /help lists all commands."
+        )
+    if command == "/help":
         return bot_help()
 
     if command == "/cancel":

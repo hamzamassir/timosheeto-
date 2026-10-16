@@ -7,7 +7,7 @@ import base64
 import html
 import os
 import secrets
-from datetime import date
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode
 
@@ -26,150 +26,283 @@ from worklog import (
 HOST = "0.0.0.0"
 PORT = 8090
 
+ICON_JOURNAL = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 5v14M8 9h8M8 13h6"/></svg>"""
+ICON_LOG = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>"""
+ICON_TICKETS = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>"""
+ICON_REFRESH = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>"""
+
 PAGE_CSS = """
 :root {
-  color-scheme: light dark;
-  --bg: #eceef2;
-  --surface: #ffffff;
-  --border: #d4d8e0;
-  --ink: #1a1f2b;
-  --muted: #5c6578;
-  --accent: #2f5fd4;
-  --accent-soft: #e8eefb;
-  --danger: #b42318;
+  color-scheme: dark;
+  --ink: #f4f7fb;
+  --muted: rgba(244, 247, 251, 0.68);
+  --line: rgba(255, 255, 255, 0.20);
+  --glass-deep: rgba(255, 255, 255, 0.05);
+  --glass-mid: rgba(255, 255, 255, 0.10);
+  --glass-top: rgba(255, 255, 255, 0.18);
+  --field: rgba(0, 0, 0, 0.35);
+  --accent: #7eb4ff;
+  --accent-glow: rgba(126, 180, 255, 0.22);
+  --danger: #ff9b94;
+  --ok: #8fd9b0;
+  --shadow: 0 24px 60px rgba(88, 130, 255, 0.14);
 }
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #12151c;
-    --surface: #1b2029;
-    --border: #2e3544;
-    --ink: #e8ebf2;
-    --muted: #9aa3b5;
-    --accent: #6b9fff;
-    --accent-soft: #243044;
-    --danger: #ff8f85;
+    color-scheme: light;
+    --ink: #142033;
+    --muted: rgba(20, 32, 51, 0.65);
+    --line: rgba(255, 255, 255, 0.55);
+    --glass-deep: rgba(255, 255, 255, 0.45);
+    --glass-mid: rgba(255, 255, 255, 0.62);
+    --glass-top: rgba(255, 255, 255, 0.78);
+    --field: rgba(255, 255, 255, 0.55);
+    --accent: #2f5fd4;
+    --accent-glow: rgba(47, 95, 212, 0.18);
+    --danger: #b42318;
+    --ok: #067647;
+    --shadow: 0 20px 50px rgba(40, 70, 140, 0.10);
   }
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  min-width: 1100px;
+  min-width: 1180px;
   color: var(--ink);
-  background: var(--bg);
-  font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  background:
+    radial-gradient(900px 520px at 8% -8%, rgba(120, 162, 255, 0.42), transparent 58%),
+    radial-gradient(720px 440px at 100% 0%, rgba(186, 124, 255, 0.32), transparent 55%),
+    linear-gradient(155deg, #1b2744 0%, #121826 50%, #1a1030 100%);
+}
+@media (prefers-color-scheme: light) {
+  body {
+    background:
+      radial-gradient(900px 520px at 8% -8%, rgba(120, 162, 255, 0.25), transparent 58%),
+      radial-gradient(720px 440px at 100% 0%, rgba(186, 124, 255, 0.18), transparent 55%),
+      linear-gradient(155deg, #e8ecf5 0%, #dfe6f2 50%, #e9e2f4 100%);
+  }
 }
 .app {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 248px 1fr;
   min-height: 100vh;
+  gap: 0;
 }
-nav {
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  padding: 20px 16px;
+.sidebar-wrap {
+  padding: 20px 14px 24px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
 }
-nav h1 {
+.sidebar {
+  position: relative;
+  height: 100%;
+  border-radius: 22px;
+  padding: 18px 12px;
+}
+.sidebar .layer {
+  position: absolute;
+  inset: 0;
+  border-radius: 22px;
+  background: var(--glass-deep);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid var(--line);
+}
+.sidebar .layer.mid {
+  inset: 6px;
+  border-radius: 18px;
+  background: var(--glass-mid);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.sidebar-inner { position: relative; z-index: 1; }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  padding: 4px 8px 14px;
+}
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--glass-top);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  color: var(--accent);
+  font-weight: 700;
   font-size: 15px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  letter-spacing: 0.02em;
 }
-nav .sub { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
-nav a, nav button.link {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 8px 10px;
+.brand h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.02em; }
+.brand .sub { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
   margin-bottom: 4px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
+  border-radius: 12px;
   color: var(--ink);
   text-decoration: none;
+  border: 1px solid transparent;
+  background: transparent;
   font: inherit;
+  width: 100%;
   cursor: pointer;
+  text-align: left;
 }
-nav a.active, nav a:hover, nav button.link:hover {
-  background: var(--accent-soft);
+.nav-item .ico {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  opacity: 0.85;
 }
-main { padding: 24px 28px 40px; }
-.toolbar {
+.nav-item:hover, .nav-item.active {
+  background: var(--glass-top);
+  backdrop-filter: blur(16px);
+  border-color: var(--line);
+  box-shadow: var(--shadow);
+}
+.nav-item.active { color: var(--accent); }
+.nav-item.active .ico { opacity: 1; }
+main { padding: 24px 28px 48px; }
+.page-head {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 16px;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 18px;
 }
-.toolbar h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.page-head h2 { margin: 0; font-size: 22px; font-weight: 600; }
 .muted { color: var(--muted); }
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+.glass-card {
+  position: relative;
+  background: var(--glass-top);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
   padding: 16px 18px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 .steps {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 14px;
+  margin-bottom: 14px;
   font-size: 12px;
   color: var(--muted);
 }
 .steps span.on { color: var(--accent); font-weight: 600; }
-label { display: block; font-weight: 600; margin-bottom: 6px; }
-select, textarea, input[type="text"], input[type="date"], input[type="number"] {
+label { display: block; font-weight: 600; margin: 12px 0 6px; }
+label:first-child { margin-top: 0; }
+select, textarea, input[type="date"] {
   width: 100%;
-  max-width: 640px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
+  max-width: 680px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--field);
+  backdrop-filter: blur(8px);
   color: var(--ink);
   font: inherit;
 }
-textarea { min-height: 120px; resize: vertical; }
-.row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
-button.primary {
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 14px;
+textarea { min-height: 130px; resize: vertical; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+button.primary, button.secondary, button.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 9px 16px;
   font: inherit;
   cursor: pointer;
+  border: 1px solid var(--line);
+}
+button.primary {
+  background: linear-gradient(135deg, var(--accent), #6b8cff);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 12px 28px var(--accent-glow);
 }
 button.secondary {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 14px;
-  font: inherit;
-  cursor: pointer;
+  background: var(--glass-mid);
+  backdrop-filter: blur(12px);
   color: var(--ink);
 }
-.issue-pick { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
-.issue-pick label { font-weight: 400; display: flex; gap: 8px; padding: 4px 0; }
-table {
+button.ghost {
+  background: transparent;
+  color: var(--ink);
+}
+button .ico { width: 16px; height: 16px; }
+.issue-pick {
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: var(--field);
+  backdrop-filter: blur(8px);
+}
+.issue-pick label { font-weight: 400; display: flex; gap: 8px; padding: 5px 0; margin: 0; }
+table.data {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
-th, td {
+table.data th, table.data td {
   text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
-th { color: var(--muted); font-weight: 600; font-size: 12px; }
+table.data th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .day-title {
-  margin: 18px 0 8px;
-  font-size: 13px;
+  margin: 16px 0 8px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
-.error { color: var(--danger); margin-top: 10px; }
-.ok { color: var(--accent); }
-ul.bullets { margin: 8px 0 0; padding-left: 18px; }
+.project-block { margin-bottom: 12px; }
+.project-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.project-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.pill {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--glass-mid);
+  backdrop-filter: blur(8px);
+  color: var(--muted);
+}
+.issue-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 120px 100px;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.issue-row a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.issue-row a:hover { text-decoration: underline; }
+.error { color: var(--danger); }
+.ok { color: var(--ok); }
+ul.bullets { margin: 6px 0 0; padding-left: 18px; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
 """
 
 
@@ -181,23 +314,59 @@ def esc(value: object) -> str:
     return html.escape(str(value))
 
 
-def render_layout(active: str, body: str, snapshot_note: str = "") -> str:
+def format_when(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def snapshot_note(snapshot: dict | None) -> str:
+    if not snapshot:
+        return "No ticket cache"
+    return f"{snapshot.get('issue_total', 0)} open · {snapshot.get('project_total', 0)} projects"
+
+
+def nav_link(href: str, icon: str, label: str, active: str, tab: str) -> str:
+    cls = "nav-item active" if active == tab else "nav-item"
+    return f'<a href="{href}" class="{cls}"><span class="ico">{icon}</span><span>{esc(label)}</span></a>'
+
+
+def render_layout(active: str, body: str, snapshot: dict | None = None) -> str:
+    note = snapshot_note(snapshot)
+    nav = (
+        nav_link("/", ICON_JOURNAL, "Journal", active, "home")
+        + nav_link("/log", ICON_LOG, "Log work", active, "log")
+        + nav_link("/tickets", ICON_TICKETS, "Tickets", active, "tickets")
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Work log</title>
+  <title>Timosheeto</title>
   <style>{PAGE_CSS}</style>
 </head>
 <body>
   <div class="app">
-    <nav>
-      <h1>Timosheeto</h1>
-      <p class="sub">{esc(snapshot_note)}</p>
-      <a href="/" class="{'active' if active == 'home' else ''}">Journal</a>
-      <a href="/log" class="{'active' if active == 'log' else ''}">Log work</a>
-      <form method="post" action="/sync"><button type="submit" class="link">Refresh tickets</button></form>
-    </nav>
+    <aside class="sidebar-wrap">
+      <div class="sidebar">
+        <div class="layer"></div>
+        <div class="layer mid"></div>
+        <div class="sidebar-inner">
+          <div class="brand">
+            <div class="brand-mark">T</div>
+            <div>
+              <h1>Timosheeto</h1>
+              <p class="sub">{esc(note)}</p>
+            </div>
+          </div>
+          {nav}
+        </div>
+      </div>
+    </aside>
     <main>{body}</main>
   </div>
 </body>
@@ -206,19 +375,18 @@ def render_layout(active: str, body: str, snapshot_note: str = "") -> str:
 
 
 def render_home(snapshot: dict | None, error: str = "", ok: str = "") -> str:
-    note = "No Redmine snapshot"
-    if snapshot:
-        note = f"{snapshot.get('issue_total', 0)} open tickets · {snapshot.get('project_total', 0)} projects"
     grouped = entries_by_date()
     blocks: list[str] = []
     if error:
-        blocks.append(f"<p class='error'>{esc(error)}</p>")
+        blocks.append(f"<p class='error glass-card'>{esc(error)}</p>")
     if ok:
-        blocks.append(f"<p class='ok'>{esc(ok)}</p>")
+        blocks.append(f"<p class='ok glass-card'>{esc(ok)}</p>")
     if not grouped:
         blocks.append(
-            "<div class='card'><p class='muted'>No entries yet. Use <strong>Log work</strong> "
-            "or Telegram <code>/log</code>.</p></div>"
+            "<div class='glass-card empty'>"
+            "<p>No journal entries yet.</p>"
+            "<p class='muted'>Use <strong>Log work</strong> or Telegram <code>/log</code>.</p>"
+            "</div>"
         )
     else:
         for day, entries in grouped.items():
@@ -240,17 +408,82 @@ def render_home(snapshot: dict | None, error: str = "", ok: str = "") -> str:
                 )
             blocks.append(
                 f"<div class='day-title'>{esc(day)}</div>"
-                "<div class='card'><table>"
+                "<div class='glass-card'><table class='data'>"
                 "<thead><tr><th>Logged</th><th>Period</th><th>Project</th>"
                 "<th>Tickets</th><th>Min</th><th>Summary</th></tr></thead>"
                 f"<tbody>{''.join(rows)}</tbody></table></div>"
             )
     body = (
-        "<div class='toolbar'><h2>Journal</h2>"
-        "<span class='muted'>What you did, by day — from the local database</span></div>"
+        "<div class='page-head'><div><h2>Journal</h2>"
+        "<p class='muted'>What you did — stored locally in SQLite</p></div></div>"
         + "".join(blocks)
     )
-    return render_layout("home", body, note)
+    return render_layout("home", body, snapshot)
+
+
+def render_tickets(snapshot: dict | None, error: str = "", ok: str = "") -> str:
+    blocks: list[str] = []
+    if error:
+        blocks.append(f"<p class='error'>{esc(error)}</p>")
+    if ok:
+        blocks.append(f"<p class='ok'>{esc(ok)}</p>")
+
+    refresh_btn = (
+        f"<form method='post' action='/sync' style='margin:0'>"
+        f"<button type='submit' class='primary'><span class='ico'>{ICON_REFRESH}</span>"
+        "Refresh from Redmine</button></form>"
+    )
+
+    if snapshot is None:
+        blocks.append(
+            "<div class='glass-card empty'>"
+            "<p>No snapshot file yet.</p>"
+            "<p class='muted'>Refresh pulls open tickets assigned to you (read only).</p>"
+            "</div>"
+        )
+    else:
+        redmine = (snapshot.get("redmine_url") or "").rstrip("/")
+        by_project: dict[int, list] = {}
+        for issue in snapshot.get("issues") or []:
+            pid = int((issue.get("project") or {}).get("id") or 0)
+            by_project.setdefault(pid, []).append(issue)
+        for project in snapshot.get("projects") or []:
+            issues = by_project.get(int(project.get("id") or 0), [])
+            issue_rows = []
+            for issue in issues:
+                iid = issue.get("id")
+                link = (
+                    f"<a href='{esc(redmine)}/issues/{esc(iid)}' target='_blank' rel='noopener'>#{esc(iid)}</a>"
+                    if redmine
+                    else f"#{esc(iid)}"
+                )
+                issue_rows.append(
+                    "<div class='issue-row'>"
+                    f"{link}"
+                    f"<div>{esc(issue.get('subject') or '')}</div>"
+                    f"<div class='muted'>{esc((issue.get('priority') or {}).get('name') or '')}</div>"
+                    f"<div class='muted'>{esc((issue.get('status') or {}).get('name') or '')}</div>"
+                    "</div>"
+                )
+            blocks.append(
+                "<section class='glass-card project-block'>"
+                "<div class='project-head'>"
+                f"<h3>{esc(project.get('name') or '')}</h3>"
+                f"<span class='pill'>{len(issues)} open</span>"
+                "</div>"
+                + ("".join(issue_rows) or "<p class='muted'>No open tickets.</p>")
+                + "</section>"
+            )
+
+    synced = esc(format_when(snapshot.get("synced_at") if snapshot else None))
+    body = (
+        "<div class='page-head'>"
+        "<div><h2>Tickets</h2>"
+        f"<p class='muted'>Cached sync · last refresh {synced}</p></div>"
+        f"{refresh_btn}</div>"
+        + "".join(blocks)
+    )
+    return render_layout("tickets", body, snapshot)
 
 
 def render_log(
@@ -260,17 +493,15 @@ def render_log(
     error: str = "",
     saved: dict | None = None,
 ) -> str:
-    note = "Snapshot missing — refresh tickets first"
-    if snapshot:
-        note = f"{snapshot.get('issue_total', 0)} tickets in cache"
     if saved:
         body = (
-            "<div class='toolbar'><h2>Saved</h2></div>"
-            f"<div class='card'><pre style='white-space:pre-wrap;margin:0'>"
+            "<div class='page-head'><h2>Saved</h2></div>"
+            f"<div class='glass-card'><pre style='white-space:pre-wrap;margin:0;font:inherit'>"
             f"{esc(format_saved(saved))}</pre></div>"
-            "<p><a href='/log'>Log another</a> · <a href='/'>Back to journal</a></p>"
+            "<p class='row'><a class='nav-item' style='display:inline-flex;width:auto' href='/log'>"
+            f"<span class='ico'>{ICON_LOG}</span> Log another</a></p>"
         )
-        return render_layout("log", body, note)
+        return render_layout("log", body, snapshot)
 
     projects = []
     if snapshot:
@@ -279,7 +510,7 @@ def render_log(
         except RuntimeError:
             projects = []
 
-    step_labels = ["Project", "Ticket?", "Tickets", "Describe"]
+    step_labels = ["Project", "Ticket?", "Pick tickets", "Describe"]
     steps_html = "".join(
         f"<span class='{'on' if index == step else ''}'>{index + 1}. {label}</span>"
         for index, label in enumerate(step_labels)
@@ -299,7 +530,7 @@ def render_log(
         )
     elif step == 1:
         inner = (
-            "<p>Link this entry to an open ticket?</p>"
+            "<p class='muted'>Link this entry to an open ticket?</p>"
             "<div class='row'>"
             "<button class='primary' name='ticket_mode' value='yes' type='submit'>Yes</button>"
             "<button class='secondary' name='ticket_mode' value='no' type='submit'>No ticket</button>"
@@ -329,7 +560,7 @@ def render_log(
             f"<label for='work_date'>Date</label>"
             f"<input type='date' name='work_date' id='work_date' value='{esc(form.get('work_date') or date.today().isoformat())}'>"
             "<label for='paragraph'>What you did</label>"
-            f"<textarea name='paragraph' id='paragraph' required>{esc(form.get('paragraph', ''))}</textarea>"
+            f"<textarea name='paragraph' id='paragraph' required placeholder='Example: on AGR I helped the client during recette…'>{esc(form.get('paragraph', ''))}</textarea>"
             "<div class='row'><button class='primary' type='submit'>Save with Gemini</button></div>"
         )
 
@@ -338,15 +569,15 @@ def render_log(
         f"<input type='hidden' name='{esc(k)}' value='{esc(v)}'>" for k, v in preserve.items()
     )
     body = (
-        "<div class='toolbar'><h2>Log work</h2>"
-        "<span class='muted'>Test flow — scheduling comes later</span></div>"
+        "<div class='page-head'><div><h2>Log work</h2>"
+        "<p class='muted'>Project → ticket → paragraph → structured journal</p></div></div>"
         f"<div class='steps'>{steps_html}</div>"
         f"{'<p class=\"error\">' + esc(error) + '</p>' if error else ''}"
-        f"<form class='card' method='post' action='/log'>"
+        f"<form class='glass-card' method='post' action='/log'>"
         f"<input type='hidden' name='step' value='{step}'>"
         f"{hidden_inputs}{inner}</form>"
     )
-    return render_layout("log", body, note)
+    return render_layout("log", body, snapshot)
 
 
 class App(BaseHTTPRequestHandler):
@@ -356,11 +587,20 @@ class App(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = self.path.split("?", 1)[0]
+        query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        ok = (query.get("ok") or [""])[0]
         if path == "/":
-            self._send_html(render_home(self._snapshot()))
+            self._send_html(render_home(self._snapshot(), ok="Snapshot refreshed." if ok else ""))
+            return
+        if path == "/tickets":
+            self._send_html(
+                render_tickets(
+                    self._snapshot(),
+                    ok="Redmine snapshot updated." if ok else "",
+                )
+            )
             return
         if path == "/log":
-            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             form = {k: v[0] for k, v in query.items()}
             step = int(form.get("step", "0") or 0)
             self._send_html(render_log(self._snapshot(), step, form))
@@ -386,10 +626,10 @@ class App(BaseHTTPRequestHandler):
             try:
                 refresh_snapshot()
             except Exception as exc:  # noqa: BLE001
-                self._send_html(render_home(self._snapshot(), error=str(exc)))
+                self._send_html(render_tickets(self._snapshot(), error=str(exc)))
                 return
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", "/tickets?ok=1")
             self.end_headers()
             return
 
@@ -404,18 +644,15 @@ class App(BaseHTTPRequestHandler):
             if step == 0:
                 if not form.get("project_index"):
                     raise RuntimeError("Pick a project.")
-                nxt = {**form, "step": "1"}
-                self._redirect("/log?" + urlencode(nxt))
+                self._redirect("/log?" + urlencode({**form, "step": "1"}))
                 return
             if step == 1:
                 mode = form.get("ticket_mode", "")
                 if mode == "no":
-                    nxt = {**form, "step": "3", "ticket_mode": "no"}
-                    self._redirect("/log?" + urlencode(nxt))
+                    self._redirect("/log?" + urlencode({**form, "step": "3", "ticket_mode": "no"}))
                     return
                 if mode == "yes":
-                    nxt = {**form, "step": "2", "ticket_mode": "yes"}
-                    self._redirect("/log?" + urlencode(nxt))
+                    self._redirect("/log?" + urlencode({**form, "step": "2", "ticket_mode": "yes"}))
                     return
                 raise RuntimeError("Choose yes or no.")
             if step == 2:
@@ -430,8 +667,12 @@ class App(BaseHTTPRequestHandler):
                         ids = [ids]
                     text = ",".join(ids) if ids else form.get("issue_pick", "")
                     issues = resolve_issue_choices(text or "/skip", int(project["id"])) or []
-                nxt = {**form, "step": "3", "issue_pick": ",".join(str(i.get("id")) for i in issues)}
-                self._redirect("/log?" + urlencode(nxt))
+                self._redirect(
+                    "/log?"
+                    + urlencode(
+                        {**form, "step": "3", "issue_pick": ",".join(str(i.get("id")) for i in issues)}
+                    )
+                )
                 return
             if step == 3:
                 project = resolve_project_choice(form.get("project_index", ""))
