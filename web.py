@@ -303,6 +303,41 @@ table.data th { color: var(--muted); font-size: 11px; text-transform: uppercase;
 .ok { color: var(--ok); }
 ul.bullets { margin: 6px 0 0; padding-left: 18px; }
 .empty { padding: 28px; text-align: center; color: var(--muted); }
+.wizard-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--glass-mid);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  color: var(--muted);
+}
+.wizard-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.wizard-footer .left, .wizard-footer .right { display: flex; gap: 8px; flex-wrap: wrap; }
+a.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--glass-mid);
+  backdrop-filter: blur(8px);
+}
 """
 
 
@@ -312,6 +347,57 @@ def setting(env: dict[str, str], key: str) -> str:
 
 def esc(value: object) -> str:
     return html.escape(str(value))
+
+
+def form_from_body(raw: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Flatten POST body; duplicate keys use the last value (fixes double step fields)."""
+    form: dict[str, str] = {}
+    multi: dict[str, list[str]] = {}
+    for key, values in parse_qs(raw).items():
+        if not values:
+            continue
+        if key == "issue_id":
+            multi[key] = values
+            form["issue_pick"] = ",".join(values)
+        else:
+            form[key] = values[-1]
+    return form, multi
+
+
+def log_query(step: int, form: dict[str, str]) -> str:
+    keep = ("project_index", "ticket_mode", "issue_pick", "work_date", "paragraph")
+    params = {k: v for k, v in form.items() if k in keep and v}
+    params["step"] = str(step)
+    return "/log?" + urlencode(params)
+
+
+def wizard_hiddens(form: dict[str, str], step: int) -> str:
+    skip = {"paragraph", "issue_id", "ticket_mode", "skip_tickets", "step", "action"}
+    parts = [f'<input type="hidden" name="step" value="{step}">']
+    for key, value in form.items():
+        if key in skip or not value:
+            continue
+        parts.append(f'<input type="hidden" name="{esc(key)}" value="{esc(value)}">')
+    return "".join(parts)
+
+
+def wizard_footer(back_href: str | None, primary: str) -> str:
+    back = (
+        f'<a class="back-link" href="{esc(back_href)}">← Back</a>'
+        if back_href
+        else "<span></span>"
+    )
+    return (
+        f"<div class='wizard-footer'><div class='left'>{back}</div>"
+        f"<div class='right'>{primary}</div></div>"
+    )
+
+
+def project_context(form: dict[str, str]) -> str:
+    project = resolve_project_choice(form.get("project_index", ""))
+    if not project:
+        return ""
+    return f"<div class='wizard-context'>Project: <strong>{esc(project.get('name'))}</strong></div>"
 
 
 def format_when(value: str | None) -> str:
@@ -516,7 +602,9 @@ def render_log(
         for index, label in enumerate(step_labels)
     )
 
+    ctx = project_context(form) if step > 0 else ""
     inner = ""
+    footer = ""
     if step == 0:
         options = "".join(
             f"<option value='{index}' {'selected' if form.get('project_index') == str(index) else ''}>"
@@ -524,58 +612,62 @@ def render_log(
             for index, p in enumerate(projects, start=1)
         )
         inner = (
-            f"<label for='project_index'>Project</label>"
+            f"<label for='project_index'>1 — Choose project</label>"
             f"<select name='project_index' id='project_index' required>{options}</select>"
-            "<div class='row'><button class='primary' type='submit'>Next</button></div>"
         )
+        footer = wizard_footer(None, '<button class="primary" type="submit" name="action" value="next">Next →</button>')
     elif step == 1:
         inner = (
-            "<p class='muted'>Link this entry to an open ticket?</p>"
-            "<div class='row'>"
-            "<button class='primary' name='ticket_mode' value='yes' type='submit'>Yes</button>"
-            "<button class='secondary' name='ticket_mode' value='no' type='submit'>No ticket</button>"
-            "</div>"
+            "<p><strong>2 — Link to a ticket?</strong></p>"
+            "<p class='muted'>Choose whether this work maps to an open Redmine ticket.</p>"
+        )
+        footer = wizard_footer(
+            log_query(0, form),
+            '<button class="secondary" type="submit" name="action" value="ticket_no">No ticket</button>'
+            '<button class="primary" type="submit" name="action" value="ticket_yes">Yes, pick ticket →</button>',
         )
     elif step == 2:
         project = resolve_project_choice(form.get("project_index", ""))
         issues = issues_for_project(int(project["id"])) if project else []
         checks = []
         selected = {s.strip() for s in (form.get("issue_pick") or "").split(",") if s.strip()}
-        for index, issue in enumerate(issues, start=1):
+        for issue in issues:
             iid = str(issue.get("id"))
-            checked = "checked" if iid in selected or str(index) in selected else ""
+            checked = "checked" if iid in selected else ""
             checks.append(
                 f"<label><input type='checkbox' name='issue_id' value='{esc(iid)}' {checked}> "
                 f"#{esc(iid)} — {esc((issue.get('subject') or '')[:90])}</label>"
             )
         inner = (
+            "<p><strong>3 — Select ticket(s)</strong></p>"
             "<div class='issue-pick'>" + ("".join(checks) or "<p class='muted'>No tickets.</p>") + "</div>"
-            "<div class='row'>"
-            "<button class='primary' type='submit'>Next</button>"
-            "<button class='secondary' name='skip_tickets' value='1' type='submit'>Skip</button>"
-            "</div>"
+        )
+        footer = wizard_footer(
+            log_query(1, form),
+            '<button class="secondary" type="submit" name="action" value="ticket_skip">No ticket</button>'
+            '<button class="primary" type="submit" name="action" value="next">Next →</button>',
         )
     else:
+        back = log_query(2, form) if form.get("ticket_mode") == "yes" else log_query(1, form)
         inner = (
+            "<p><strong>4 — Describe your work</strong></p>"
             f"<label for='work_date'>Date</label>"
             f"<input type='date' name='work_date' id='work_date' value='{esc(form.get('work_date') or date.today().isoformat())}'>"
             "<label for='paragraph'>What you did</label>"
             f"<textarea name='paragraph' id='paragraph' required placeholder='Example: on AGR I helped the client during recette…'>{esc(form.get('paragraph', ''))}</textarea>"
-            "<div class='row'><button class='primary' type='submit'>Save with Gemini</button></div>"
+        )
+        footer = wizard_footer(
+            back,
+            '<button class="primary" type="submit" name="action" value="save">Save with Gemini</button>',
         )
 
-    preserve = {k: v for k, v in form.items() if k not in {"paragraph", "issue_id", "ticket_mode", "skip_tickets"}}
-    hidden_inputs = "".join(
-        f"<input type='hidden' name='{esc(k)}' value='{esc(v)}'>" for k, v in preserve.items()
-    )
     body = (
         "<div class='page-head'><div><h2>Log work</h2>"
-        "<p class='muted'>Project → ticket → paragraph → structured journal</p></div></div>"
+        "<p class='muted'>Step-by-step journal entry</p></div></div>"
         f"<div class='steps'>{steps_html}</div>"
         f"{'<p class=\"error\">' + esc(error) + '</p>' if error else ''}"
         f"<form class='glass-card' method='post' action='/log'>"
-        f"<input type='hidden' name='step' value='{step}'>"
-        f"{hidden_inputs}{inner}</form>"
+        f"{wizard_hiddens(form, step)}{ctx}{inner}{footer}</form>"
     )
     return render_layout("log", body, snapshot)
 
@@ -613,15 +705,6 @@ class App(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length") or "0")
         raw = self.rfile.read(length).decode("utf-8", errors="replace")
-        fields = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(raw).items()}
-        query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
-        form = {k: v[0] for k, v in query.items()}
-        for key, value in fields.items():
-            if key == "issue_id" and "issue_id" in fields:
-                form["issue_pick"] = ",".join(fields["issue_id"])  # type: ignore[arg-type]
-            elif isinstance(value, str):
-                form[key] = value
-
         if path == "/sync":
             try:
                 refresh_snapshot()
@@ -634,47 +717,58 @@ class App(BaseHTTPRequestHandler):
             return
 
         if path == "/log":
-            self._handle_log_post(form, fields)
+            form, multi = form_from_body(raw)
+            self._handle_log_post(form, multi)
             return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
 
-    def _handle_log_post(self, form: dict[str, str], fields: dict) -> None:
+    def _handle_log_post(self, form: dict[str, str], multi: dict[str, list[str]]) -> None:
         step = int(form.get("step", "0") or 0)
+        action = form.get("action", "")
         try:
             if step == 0:
+                if action != "next":
+                    raise RuntimeError("Use Next to continue.")
                 if not form.get("project_index"):
                     raise RuntimeError("Pick a project.")
-                self._redirect("/log?" + urlencode({**form, "step": "1"}))
+                self._redirect(log_query(1, form))
                 return
             if step == 1:
-                mode = form.get("ticket_mode", "")
-                if mode == "no":
-                    self._redirect("/log?" + urlencode({**form, "step": "3", "ticket_mode": "no"}))
+                if action == "ticket_no":
+                    nxt = {**form, "ticket_mode": "no", "issue_pick": ""}
+                    self._redirect(log_query(3, nxt))
                     return
-                if mode == "yes":
-                    self._redirect("/log?" + urlencode({**form, "step": "2", "ticket_mode": "yes"}))
+                if action == "ticket_yes":
+                    nxt = {**form, "ticket_mode": "yes"}
+                    self._redirect(log_query(2, nxt))
                     return
-                raise RuntimeError("Choose yes or no.")
+                raise RuntimeError("Choose Yes or No ticket.")
             if step == 2:
                 project = resolve_project_choice(form.get("project_index", ""))
                 if not project:
                     raise RuntimeError("Invalid project.")
-                if form.get("skip_tickets"):
+                if action == "ticket_skip":
                     issues = []
-                else:
-                    ids = fields.get("issue_id", [])
-                    if isinstance(ids, str):
-                        ids = [ids]
+                elif action == "next":
+                    ids = multi.get("issue_id", [])
                     text = ",".join(ids) if ids else form.get("issue_pick", "")
-                    issues = resolve_issue_choices(text or "/skip", int(project["id"])) or []
-                self._redirect(
-                    "/log?"
-                    + urlencode(
-                        {**form, "step": "3", "issue_pick": ",".join(str(i.get("id")) for i in issues)}
-                    )
-                )
+                    if not text:
+                        raise RuntimeError("Pick at least one ticket, or choose No ticket.")
+                    issues = resolve_issue_choices(text, int(project["id"]))
+                    if issues is None:
+                        raise RuntimeError("Invalid ticket selection.")
+                else:
+                    raise RuntimeError("Use Next to continue.")
+                nxt = {
+                    **form,
+                    "issue_pick": ",".join(str(i.get("id")) for i in issues),
+                    "ticket_mode": "yes" if issues else "no",
+                }
+                self._redirect(log_query(3, nxt))
                 return
             if step == 3:
+                if action != "save":
+                    raise RuntimeError("Use Save to finish.")
                 project = resolve_project_choice(form.get("project_index", ""))
                 if not project:
                     raise RuntimeError("Invalid project.")
