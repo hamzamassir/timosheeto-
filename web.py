@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assigned-issue browser on port 8090. Basic auth comes from .env."""
+"""Desktop work log on port 8090. Basic auth from .env."""
 
 from __future__ import annotations
 
@@ -7,130 +7,169 @@ import base64
 import html
 import os
 import secrets
-from datetime import datetime
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
-from brief import bullet_points, load_snapshot, refresh_snapshot
+from brief import load_snapshot, refresh_snapshot
 from envfile import read_env
+from store import entries_by_date, init_db
+from worklog import (
+    format_saved,
+    issues_for_project,
+    projects_from_snapshot,
+    resolve_issue_choices,
+    resolve_project_choice,
+    save_work_log,
+)
 
 HOST = "0.0.0.0"
 PORT = 8090
 
 PAGE_CSS = """
 :root {
-  color-scheme: dark;
-  --ink: #f4f7fb;
-  --muted: rgba(244, 247, 251, 0.72);
-  --glass: rgba(0, 0, 0, 0.40);
-  --glass-deep: rgba(255, 255, 255, 0.05);
-  --glass-top: rgba(255, 255, 255, 0.10);
-  --line: rgba(255, 255, 255, 0.20);
-  --shadow: 0 24px 60px rgba(88, 130, 255, 0.16);
-  --field: rgba(0, 0, 0, 0.40);
+  color-scheme: light dark;
+  --bg: #eceef2;
+  --surface: #ffffff;
+  --border: #d4d8e0;
+  --ink: #1a1f2b;
+  --muted: #5c6578;
+  --accent: #2f5fd4;
+  --accent-soft: #e8eefb;
+  --danger: #b42318;
 }
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   :root {
-    color-scheme: light;
-    --ink: #142033;
-    --muted: rgba(20, 32, 51, 0.72);
-    --glass: rgba(255, 255, 255, 0.80);
-    --glass-deep: rgba(255, 255, 255, 0.50);
-    --glass-top: rgba(255, 255, 255, 0.80);
-    --line: rgba(255, 255, 255, 0.20);
-    --shadow: 0 24px 50px rgba(40, 70, 140, 0.12);
-    --field: rgba(255, 255, 255, 0.55);
+    --bg: #12151c;
+    --surface: #1b2029;
+    --border: #2e3544;
+    --ink: #e8ebf2;
+    --muted: #9aa3b5;
+    --accent: #6b9fff;
+    --accent-soft: #243044;
+    --danger: #ff8f85;
   }
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
 body {
-  margin: 0;
+  min-width: 1100px;
+  color: var(--ink);
+  background: var(--bg);
+  font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+}
+.app {
+  display: grid;
+  grid-template-columns: 240px 1fr;
   min-height: 100vh;
-  color: var(--ink);
-  font: 16px/1.45 "Segoe UI", sans-serif;
-  background:
-    radial-gradient(900px 480px at 10% -10%, rgba(120, 162, 255, 0.45), transparent 60%),
-    radial-gradient(700px 420px at 100% 0%, rgba(186, 124, 255, 0.35), transparent 55%),
-    linear-gradient(160deg, #1b2744 0%, #121826 48%, #1a1030 100%);
 }
-main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
-h1 { font-size: 1.8rem; margin: 0 0 6px; }
-h2 { font-size: 1.15rem; margin: 0 0 12px; }
-p { margin: 0; }
-a { color: inherit; }
-.muted { color: var(--muted); }
-.stack { position: relative; margin: 22px 0; }
-.stack .layer {
-  position: absolute;
-  inset: 0;
-  border-radius: 28px;
-  background: var(--glass-deep);
-  backdrop-filter: blur(40px);
-  -webkit-backdrop-filter: blur(40px);
+nav {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 20px 16px;
 }
-.stack .mid {
-  inset: 8px;
-  border-radius: 22px;
-  background: var(--glass);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+nav h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+  letter-spacing: 0.02em;
 }
-.panel, .project {
-  position: relative;
-  background: var(--glass-top);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  box-shadow: var(--shadow);
-}
-.panel { padding: 18px; }
-header.panel { margin-bottom: 8px; }
-.project { padding: 16px 16px 8px; margin-top: 14px; }
-.head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; }
-label { display: block; margin-bottom: 8px; }
-textarea, button {
-  font: inherit;
-  color: var(--ink);
-}
-textarea {
+nav .sub { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+nav a, nav button.link {
+  display: block;
   width: 100%;
-  min-height: 96px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background: var(--field);
-  backdrop-filter: blur(8px);
-  resize: vertical;
-}
-.actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-button {
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(12px);
-  border-radius: 999px;
-  padding: 8px 16px;
-  box-shadow: var(--shadow);
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  text-decoration: none;
+  font: inherit;
   cursor: pointer;
 }
-.bullets { margin: 12px 0 0; padding-left: 18px; }
-.bullets li { margin: 6px 0; }
-.issue {
-  display: grid;
-  grid-template-columns: 88px 1fr;
-  gap: 8px 12px;
-  padding: 10px 0;
-  border-top: 1px solid var(--line);
+nav a.active, nav a:hover, nav button.link:hover {
+  background: var(--accent-soft);
 }
-.meta { color: var(--muted); font-size: 0.85rem; }
-.count {
-  font-size: 0.85rem;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.08);
+main { padding: 24px 28px 40px; }
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 16px;
 }
-.error { color: #ffb4b4; margin-top: 10px; }
+.toolbar h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.muted { color: var(--muted); }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.steps {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.steps span.on { color: var(--accent); font-weight: 600; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+select, textarea, input[type="text"], input[type="date"], input[type="number"] {
+  width: 100%;
+  max-width: 640px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+textarea { min-height: 120px; resize: vertical; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink);
+}
+.issue-pick { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.issue-pick label { font-weight: 400; display: flex; gap: 8px; padding: 4px 0; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.day-title {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.error { color: var(--danger); margin-top: 10px; }
+.ok { color: var(--accent); }
+ul.bullets { margin: 8px 0 0; padding-left: 18px; }
 """
 
 
@@ -138,145 +177,296 @@ def setting(env: dict[str, str], key: str) -> str:
     return env.get(key) or os.environ.get(key) or ""
 
 
-def format_when(value: str | None) -> str:
-    if not value:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return value
-    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+def esc(value: object) -> str:
+    return html.escape(str(value))
 
 
-def bullet_items(reply: str) -> list[str]:
-    items: list[str] = []
-    for line in reply.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith(("- ", "* ")):
-            stripped = stripped[2:].strip()
-        items.append(stripped)
-    return items or [reply.strip()]
-
-
-def render_page(snapshot: dict | None, message: str = "", reply: str = "", error: str = "") -> str:
-    if snapshot is None:
-        body = "<p class='muted'>No snapshot yet. Refresh to pull assigned open issues.</p>"
-        summary = "No snapshot"
-    else:
-        redmine = (snapshot.get("redmine_url") or "").rstrip("/")
-        by_project: dict[int, list] = {}
-        for issue in snapshot.get("issues") or []:
-            project_id = int((issue.get("project") or {}).get("id") or 0)
-            by_project.setdefault(project_id, []).append(issue)
-        blocks: list[str] = []
-        for project in snapshot.get("projects") or []:
-            issues = by_project.get(int(project.get("id") or 0), [])
-            rows: list[str] = []
-            for issue in issues:
-                issue_id = issue.get("id")
-                priority = html.escape((issue.get("priority") or {}).get("name") or "")
-                status = html.escape((issue.get("status") or {}).get("name") or "")
-                updated = html.escape(format_when(issue.get("updated_on")))
-                rows.append(
-                    "<article class='issue'>"
-                    f"<a href='{html.escape(redmine)}/issues/{html.escape(str(issue_id))}'>#{html.escape(str(issue_id))}</a>"
-                    "<div>"
-                    f"<div>{html.escape(issue.get('subject') or '')}</div>"
-                    f"<div class='meta'>{priority} · {status} · {updated}</div>"
-                    "</div></article>"
-                )
-            blocks.append(
-                "<section class='project'>"
-                f"<div class='head'><h2>{html.escape(project.get('name') or '')}</h2>"
-                f"<span class='count'>{len(issues)} open</span></div>"
-                f"{''.join(rows)}</section>"
-            )
-        synced = html.escape(format_when(snapshot.get("synced_at")))
-        summary = (
-            f"{snapshot.get('issue_total', 0)} open issues · "
-            f"{snapshot.get('project_total', 0)} projects · synced {synced}"
-        )
-        body = "".join(blocks)
-
-    reply_html = ""
-    if reply:
-        items = "".join(f"<li>{html.escape(item)}</li>" for item in bullet_items(reply))
-        reply_html = f"<ul class='bullets'>{items}</ul>"
-    error_html = f"<p class='error'>{html.escape(error)}</p>" if error else ""
+def render_layout(active: str, body: str, snapshot_note: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Assigned issues</title>
+  <title>Work log</title>
   <style>{PAGE_CSS}</style>
 </head>
 <body>
-  <main>
-    <header class="head panel">
-      <div>
-        <h1>Assigned issues</h1>
-        <p class="muted">{summary}</p>
-      </div>
-      <form method="post" action="/sync"><button type="submit">Refresh snapshot</button></form>
-    </header>
-    <div class="stack">
-      <div class="layer"></div>
-      <div class="layer mid"></div>
-      <form class="panel" method="post" action="/ask">
-        <label for="message">Message</label>
-        <textarea id="message" name="message" placeholder="Ask about the open tickets">{html.escape(message)}</textarea>
-        <div class="actions"><button type="submit">Bullet points</button></div>
-        {error_html}
-        {reply_html}
-      </form>
-    </div>
-    {body}
-  </main>
+  <div class="app">
+    <nav>
+      <h1>Timosheeto</h1>
+      <p class="sub">{esc(snapshot_note)}</p>
+      <a href="/" class="{'active' if active == 'home' else ''}">Journal</a>
+      <a href="/log" class="{'active' if active == 'log' else ''}">Log work</a>
+      <form method="post" action="/sync"><button type="submit" class="link">Refresh tickets</button></form>
+    </nav>
+    <main>{body}</main>
+  </div>
 </body>
 </html>
 """
 
 
+def render_home(snapshot: dict | None, error: str = "", ok: str = "") -> str:
+    note = "No Redmine snapshot"
+    if snapshot:
+        note = f"{snapshot.get('issue_total', 0)} open tickets · {snapshot.get('project_total', 0)} projects"
+    grouped = entries_by_date()
+    blocks: list[str] = []
+    if error:
+        blocks.append(f"<p class='error'>{esc(error)}</p>")
+    if ok:
+        blocks.append(f"<p class='ok'>{esc(ok)}</p>")
+    if not grouped:
+        blocks.append(
+            "<div class='card'><p class='muted'>No entries yet. Use <strong>Log work</strong> "
+            "or Telegram <code>/log</code>.</p></div>"
+        )
+    else:
+        for day, entries in grouped.items():
+            rows = []
+            for entry in entries:
+                tickets = ", ".join(f"#{i}" for i in entry["issue_ids"]) or "—"
+                mins = entry["minutes"] if entry["minutes"] is not None else "—"
+                bullets = "".join(f"<li>{esc(b)}</li>" for b in entry["bullets"])
+                rows.append(
+                    "<tr>"
+                    f"<td>{esc(entry['created_at'][:16].replace('T', ' '))}</td>"
+                    f"<td>{esc(entry['period'] or '—')}</td>"
+                    f"<td>{esc(entry['project_name'])}</td>"
+                    f"<td>{esc(tickets)}</td>"
+                    f"<td>{esc(mins)}</td>"
+                    f"<td><strong>{esc(entry['summary'])}</strong>"
+                    f"<ul class='bullets'>{bullets}</ul></td>"
+                    "</tr>"
+                )
+            blocks.append(
+                f"<div class='day-title'>{esc(day)}</div>"
+                "<div class='card'><table>"
+                "<thead><tr><th>Logged</th><th>Period</th><th>Project</th>"
+                "<th>Tickets</th><th>Min</th><th>Summary</th></tr></thead>"
+                f"<tbody>{''.join(rows)}</tbody></table></div>"
+            )
+    body = (
+        "<div class='toolbar'><h2>Journal</h2>"
+        "<span class='muted'>What you did, by day — from the local database</span></div>"
+        + "".join(blocks)
+    )
+    return render_layout("home", body, note)
+
+
+def render_log(
+    snapshot: dict | None,
+    step: int,
+    form: dict[str, str],
+    error: str = "",
+    saved: dict | None = None,
+) -> str:
+    note = "Snapshot missing — refresh tickets first"
+    if snapshot:
+        note = f"{snapshot.get('issue_total', 0)} tickets in cache"
+    if saved:
+        body = (
+            "<div class='toolbar'><h2>Saved</h2></div>"
+            f"<div class='card'><pre style='white-space:pre-wrap;margin:0'>"
+            f"{esc(format_saved(saved))}</pre></div>"
+            "<p><a href='/log'>Log another</a> · <a href='/'>Back to journal</a></p>"
+        )
+        return render_layout("log", body, note)
+
+    projects = []
+    if snapshot:
+        try:
+            projects = projects_from_snapshot()
+        except RuntimeError:
+            projects = []
+
+    step_labels = ["Project", "Ticket?", "Tickets", "Describe"]
+    steps_html = "".join(
+        f"<span class='{'on' if index == step else ''}'>{index + 1}. {label}</span>"
+        for index, label in enumerate(step_labels)
+    )
+
+    inner = ""
+    if step == 0:
+        options = "".join(
+            f"<option value='{index}' {'selected' if form.get('project_index') == str(index) else ''}>"
+            f"{esc(p.get('name'))} ({p.get('assigned_issue_count', 0)} open)</option>"
+            for index, p in enumerate(projects, start=1)
+        )
+        inner = (
+            f"<label for='project_index'>Project</label>"
+            f"<select name='project_index' id='project_index' required>{options}</select>"
+            "<div class='row'><button class='primary' type='submit'>Next</button></div>"
+        )
+    elif step == 1:
+        inner = (
+            "<p>Link this entry to an open ticket?</p>"
+            "<div class='row'>"
+            "<button class='primary' name='ticket_mode' value='yes' type='submit'>Yes</button>"
+            "<button class='secondary' name='ticket_mode' value='no' type='submit'>No ticket</button>"
+            "</div>"
+        )
+    elif step == 2:
+        project = resolve_project_choice(form.get("project_index", ""))
+        issues = issues_for_project(int(project["id"])) if project else []
+        checks = []
+        selected = {s.strip() for s in (form.get("issue_pick") or "").split(",") if s.strip()}
+        for index, issue in enumerate(issues, start=1):
+            iid = str(issue.get("id"))
+            checked = "checked" if iid in selected or str(index) in selected else ""
+            checks.append(
+                f"<label><input type='checkbox' name='issue_id' value='{esc(iid)}' {checked}> "
+                f"#{esc(iid)} — {esc((issue.get('subject') or '')[:90])}</label>"
+            )
+        inner = (
+            "<div class='issue-pick'>" + ("".join(checks) or "<p class='muted'>No tickets.</p>") + "</div>"
+            "<div class='row'>"
+            "<button class='primary' type='submit'>Next</button>"
+            "<button class='secondary' name='skip_tickets' value='1' type='submit'>Skip</button>"
+            "</div>"
+        )
+    else:
+        inner = (
+            f"<label for='work_date'>Date</label>"
+            f"<input type='date' name='work_date' id='work_date' value='{esc(form.get('work_date') or date.today().isoformat())}'>"
+            "<label for='paragraph'>What you did</label>"
+            f"<textarea name='paragraph' id='paragraph' required>{esc(form.get('paragraph', ''))}</textarea>"
+            "<div class='row'><button class='primary' type='submit'>Save with Gemini</button></div>"
+        )
+
+    preserve = {k: v for k, v in form.items() if k not in {"paragraph", "issue_id", "ticket_mode", "skip_tickets"}}
+    hidden_inputs = "".join(
+        f"<input type='hidden' name='{esc(k)}' value='{esc(v)}'>" for k, v in preserve.items()
+    )
+    body = (
+        "<div class='toolbar'><h2>Log work</h2>"
+        "<span class='muted'>Test flow — scheduling comes later</span></div>"
+        f"<div class='steps'>{steps_html}</div>"
+        f"{'<p class=\"error\">' + esc(error) + '</p>' if error else ''}"
+        f"<form class='card' method='post' action='/log'>"
+        f"<input type='hidden' name='step' value='{step}'>"
+        f"{hidden_inputs}{inner}</form>"
+    )
+    return render_layout("log", body, note)
+
+
 class App(BaseHTTPRequestHandler):
-    server_version = "redmine-sync"
+    server_version = "timosheeto"
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._authorized():
             return
-        if self.path.split("?", 1)[0] != "/":
-            self._send(404, b"Not found", "text/plain; charset=utf-8")
+        path = self.path.split("?", 1)[0]
+        if path == "/":
+            self._send_html(render_home(self._snapshot()))
             return
-        self._send_page()
+        if path == "/log":
+            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            form = {k: v[0] for k, v in query.items()}
+            step = int(form.get("step", "0") or 0)
+            self._send_html(render_log(self._snapshot(), step, form))
+            return
+        self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorized():
             return
         path = self.path.split("?", 1)[0]
+        length = int(self.headers.get("Content-Length") or "0")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        fields = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(raw).items()}
+        query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        form = {k: v[0] for k, v in query.items()}
+        for key, value in fields.items():
+            if key == "issue_id" and "issue_id" in fields:
+                form["issue_pick"] = ",".join(fields["issue_id"])  # type: ignore[arg-type]
+            elif isinstance(value, str):
+                form[key] = value
+
         if path == "/sync":
             try:
                 refresh_snapshot()
-            except Exception as exc:  # noqa: BLE001 — show the failure on the page
-                self._send_page(error=str(exc))
+            except Exception as exc:  # noqa: BLE001
+                self._send_html(render_home(self._snapshot(), error=str(exc)))
                 return
             self.send_response(303)
             self.send_header("Location", "/")
             self.end_headers()
             return
-        if path == "/ask":
-            length = int(self.headers.get("Content-Length") or "0")
-            raw = self.rfile.read(length).decode("utf-8", errors="replace")
-            message = (parse_qs(raw).get("message") or [""])[0]
-            try:
-                reply = bullet_points(message)
-            except Exception as exc:  # noqa: BLE001
-                self._send_page(message=message, error=str(exc))
-                return
-            self._send_page(message=message, reply=reply)
+
+        if path == "/log":
+            self._handle_log_post(form, fields)
             return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
+
+    def _handle_log_post(self, form: dict[str, str], fields: dict) -> None:
+        step = int(form.get("step", "0") or 0)
+        try:
+            if step == 0:
+                if not form.get("project_index"):
+                    raise RuntimeError("Pick a project.")
+                nxt = {**form, "step": "1"}
+                self._redirect("/log?" + urlencode(nxt))
+                return
+            if step == 1:
+                mode = form.get("ticket_mode", "")
+                if mode == "no":
+                    nxt = {**form, "step": "3", "ticket_mode": "no"}
+                    self._redirect("/log?" + urlencode(nxt))
+                    return
+                if mode == "yes":
+                    nxt = {**form, "step": "2", "ticket_mode": "yes"}
+                    self._redirect("/log?" + urlencode(nxt))
+                    return
+                raise RuntimeError("Choose yes or no.")
+            if step == 2:
+                project = resolve_project_choice(form.get("project_index", ""))
+                if not project:
+                    raise RuntimeError("Invalid project.")
+                if form.get("skip_tickets"):
+                    issues = []
+                else:
+                    ids = fields.get("issue_id", [])
+                    if isinstance(ids, str):
+                        ids = [ids]
+                    text = ",".join(ids) if ids else form.get("issue_pick", "")
+                    issues = resolve_issue_choices(text or "/skip", int(project["id"])) or []
+                nxt = {**form, "step": "3", "issue_pick": ",".join(str(i.get("id")) for i in issues)}
+                self._redirect("/log?" + urlencode(nxt))
+                return
+            if step == 3:
+                project = resolve_project_choice(form.get("project_index", ""))
+                if not project:
+                    raise RuntimeError("Invalid project.")
+                paragraph = form.get("paragraph", "").strip()
+                if len(paragraph) < 8:
+                    raise RuntimeError("Write a bit more detail.")
+                pick = form.get("issue_pick", "")
+                issues = resolve_issue_choices(pick or "/skip", int(project["id"])) if pick else []
+                if issues is None:
+                    issues = []
+                saved = save_work_log(
+                    project,
+                    issues or [],
+                    paragraph,
+                    work_date=form.get("work_date"),
+                )
+                self._send_html(render_log(self._snapshot(), 3, form, saved=saved))
+                return
+        except RuntimeError as exc:
+            self._send_html(render_log(self._snapshot(), step, form, error=str(exc)))
+            return
+        self._send_html(render_log(self._snapshot(), step, form, error="Unknown step."))
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.end_headers()
+
+    def _snapshot(self) -> dict | None:
+        try:
+            return load_snapshot()
+        except RuntimeError:
+            return None
 
     def _authorized(self) -> bool:
         header = self.headers.get("Authorization") or ""
@@ -291,7 +481,7 @@ class App(BaseHTTPRequestHandler):
         if len(supplied) == len(expected) and secrets.compare_digest(supplied, expected):
             return True
         self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="assigned issues"')
+        self.send_header("WWW-Authenticate", 'Basic realm="work log"')
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         body = b"Authentication required"
         self.send_header("Content-Length", str(len(body)))
@@ -299,13 +489,8 @@ class App(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return False
 
-    def _send_page(self, message: str = "", reply: str = "", error: str = "") -> None:
-        try:
-            snapshot = load_snapshot()
-        except RuntimeError:
-            snapshot = None
-        page = render_page(snapshot, message, reply, error).encode()
-        self._send(200, page, "text/html; charset=utf-8")
+    def _send_html(self, page: str) -> None:
+        self._send(200, page.encode(), "text/html; charset=utf-8")
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -320,6 +505,7 @@ class App(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    init_db()
     env = read_env()
     user = setting(env, "WEB_USER")
     password = setting(env, "WEB_PASSWORD")
@@ -328,7 +514,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), App)
     server.web_user = user  # type: ignore[attr-defined]
     server.web_password = password  # type: ignore[attr-defined]
-    print(f"Assigned issues on http://{HOST}:{PORT}/")
+    print(f"Work log UI on http://{HOST}:{PORT}/")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

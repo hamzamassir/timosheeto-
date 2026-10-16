@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram bot: a message becomes bullet points from the assigned-issue snapshot."""
+"""Telegram bot — guided /log flow and local journal."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ import time
 import urllib.error
 import urllib.request
 
-from brief import bullet_points, refresh_snapshot
 from envfile import read_env
+from store import init_db
 from sync import DATA_DIR
+from worklog import handle_bot_message
 
 OFFSET_PATH = DATA_DIR / "telegram-offset"
 TELEGRAM_LIMIT = 4000
@@ -47,27 +48,6 @@ def write_offset(offset: int) -> None:
     OFFSET_PATH.write_text(f"{offset}\n")
 
 
-def reply_text(text: str) -> str:
-    stripped = text.strip()
-    command, _, rest = stripped.partition(" ")
-    name = command.split("@", 1)[0].lower()
-    if name in {"/start", "/help"}:
-        return (
-            "Send a message and I will reply with bullet points from your open assigned issues. "
-            "/sync refreshes the snapshot first."
-        )
-    if name == "/sync":
-        snapshot = refresh_snapshot()
-        note = (
-            f"Refreshed: {snapshot['issue_total']} open issues, "
-            f"{snapshot['project_total']} projects."
-        )
-        if not rest.strip():
-            return note
-        return note + "\n\n" + bullet_points(rest)
-    return bullet_points(stripped)
-
-
 def send_chunks(token: str, chat_id: int, text: str) -> None:
     remaining = text.strip() or "Empty reply."
     while remaining:
@@ -81,7 +61,6 @@ def send_chunks(token: str, chat_id: int, text: str) -> None:
 
 
 def drain_pending(token: str) -> None:
-    """Skip messages that arrived before this process started."""
     if read_offset() is not None:
         return
     updates = telegram(token, "getUpdates", {"timeout": 0}) or []
@@ -90,6 +69,7 @@ def drain_pending(token: str) -> None:
 
 
 def main() -> None:
+    init_db()
     token = read_env().get("TELEGRAM_BOT_TOKEN", "")
     if not token:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env before starting the bot.")
@@ -115,8 +95,8 @@ def main() -> None:
             if chat_id is None or not text:
                 continue
             try:
-                answer = reply_text(text)
-            except Exception as exc:  # noqa: BLE001 — reply with the failure, never the token
+                answer = handle_bot_message(int(chat_id), text)
+            except Exception as exc:  # noqa: BLE001
                 answer = str(exc)
             try:
                 send_chunks(token, chat_id, answer)

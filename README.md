@@ -20,13 +20,18 @@ python3 sync.py
 
 That writes `data/snapshot.json` (gitignored): every open issue with `assigned_to_id=me`, and only the projects those issues belong to. Membership in a project is not enough. Redmine’s default issue filter is open tickets only; closed tickets are a separate, larger set. Repeat on a timer with `python3 sync.py --interval 900`.
 
-## Web app and Telegram bot
+## Work log (web + Telegram)
 
-Both clients read `data/snapshot.json` and share one Gemini Flash call (`brief.py`). Fill `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `WEB_USER`, and `WEB_PASSWORD` in `.env`.
+Redmine stays **read-only**: `data/snapshot.json` is the ticket cache. Your journal lives in **`data/worklog.db`** (SQLite, gitignored) for fast history.
+
+- **Web** (`python3 web.py`, port **8090**): desktop journal + step-by-step “Log work”. Gemini only on the final paragraph (structured JSON → DB).
+- **Telegram**: `/log` (guided flow), `/today`, `/sync`, `/cancel`, `/help`.
+
+On the X260 after `git pull`:
 
 ```bash
-python3 web.py    # http://0.0.0.0:8090/  (basic auth)
-python3 bot.py    # long polling; /sync refreshes, any other text returns bullets
+bash ~/redmine-sync/deploy/install-systemd.sh   # once — needs sudo
+sudo systemctl restart redmine-sync-web redmine-sync-bot
 ```
 
-Port 8090 stays clear of the dashboard (`:8080`), qBittorrent (`:8081`), and Musico (`:8765`). On the X260, after `git pull --ff-only` in this repo (not `~/monitorzed`), restart `web.py` and `bot.py`.
+Port 8090 is separate from the dashboard (`:8080`), qBittorrent (`:8081`), and Musico (`:8765`). Do not use this repo inside `~/monitorzed`.

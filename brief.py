@@ -1,8 +1,9 @@
-"""One Gemini bullet-point call over the assigned-issue snapshot."""
+"""Redmine snapshot helpers and Gemini structuring for work notes."""
 
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -14,26 +15,28 @@ MODEL = "gemini-2.5-flash"
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 _refresh_lock = threading.Lock()
 
-PROMPT = """You turn the user's message into bullet points about their open Redmine issues.
+WORK_NOTE_PROMPT = """You turn a messy work note into a clear log entry.
 
-Rules:
-- Reply with bullet points only. Each line starts with "- ".
-- When you name a ticket or a project, use only the assigned open issues listed below.
-- If the message matches none of them, say that in one bullet.
-- Do not invent issue ids, projects, or statuses.
-- Keep each bullet to one sentence.
+Context:
+- Project: {project_name}
+- Tickets: {tickets}
+- User paragraph: {paragraph}
 
-Assigned open issues:
-{issues}
+Return ONLY valid JSON (no markdown fences) with this shape:
+{{
+  "summary": "one short sentence for a timeline",
+  "bullets": ["2 to 5 concise bullets in past tense"],
+  "minutes": null or integer estimate of time spent,
+  "period": "morning" | "afternoon" | "evening" | "unknown"
+}}
 
-User message:
-{message}
+Use the user's language when natural. Do not invent ticket ids. If time is unclear, use null for minutes and "unknown" for period.
 """
 
 
 def load_snapshot() -> dict:
     if not SNAPSHOT_PATH.is_file():
-        raise RuntimeError("No snapshot yet. Refresh from the page or run python3 sync.py.")
+        raise RuntimeError("No snapshot yet. Run /sync or refresh from the web app.")
     return json.loads(SNAPSHOT_PATH.read_text())
 
 
@@ -46,35 +49,16 @@ def refresh_snapshot() -> dict:
         return snapshot
 
 
-def _issue_catalog(snapshot: dict) -> str:
-    lines: list[str] = []
-    for issue in snapshot.get("issues") or []:
-        project = (issue.get("project") or {}).get("name") or ""
-        priority = (issue.get("priority") or {}).get("name") or ""
-        status = (issue.get("status") or {}).get("name") or ""
-        description = " ".join((issue.get("description") or "").split())
-        if len(description) > 400:
-            description = description[:400] + "…"
-        lines.append(
-            f"#{issue.get('id')} | {project} | {priority} | {status} | "
-            f"{issue.get('subject') or ''} | {description}"
-        )
-    return "\n".join(lines)
-
-
-def bullet_points(message: str, snapshot: dict | None = None) -> str:
-    text = message.strip()
-    if not text:
-        raise RuntimeError("Write a message first.")
+def _gemini_json(prompt: str) -> dict:
     api_key = read_env().get("GEMINI_API_KEY", "")
     if not api_key:
         raise RuntimeError("Set GEMINI_API_KEY in .env.")
-    if snapshot is None:
-        snapshot = load_snapshot()
-    prompt = PROMPT.format(issues=_issue_catalog(snapshot), message=text)
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2},
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
     }
     request = urllib.request.Request(
         GEMINI_URL,
@@ -86,7 +70,7 @@ def bullet_points(message: str, snapshot: dict | None = None) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=90) as response:
             body = json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Gemini returned HTTP {exc.code}.") from None
@@ -94,7 +78,53 @@ def bullet_points(message: str, snapshot: dict | None = None) -> str:
         raise RuntimeError(f"Could not reach Gemini: {exc.reason}") from None
     candidates = body.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") if candidates else None) or []
-    reply = "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
-    if not reply:
+    raw = "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+    if not raw:
         raise RuntimeError("Gemini returned an empty reply.")
-    return reply
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError("Gemini did not return valid JSON.") from None
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Gemini JSON must be an object.")
+    return parsed
+
+
+def structure_work_note(
+    *,
+    project_name: str,
+    issue_ids: list[int],
+    issue_subjects: list[str],
+    paragraph: str,
+) -> dict:
+    tickets = "none"
+    if issue_ids:
+        pairs = [f"#{i} {s}" for i, s in zip(issue_ids, issue_subjects, strict=False)]
+        tickets = "; ".join(pairs)
+    prompt = WORK_NOTE_PROMPT.format(
+        project_name=project_name,
+        tickets=tickets,
+        paragraph=paragraph.strip(),
+    )
+    data = _gemini_json(prompt)
+    bullets = data.get("bullets") or []
+    if not isinstance(bullets, list):
+        bullets = [str(bullets)]
+    bullets = [str(b).strip() for b in bullets if str(b).strip()]
+    minutes = data.get("minutes")
+    if minutes is not None:
+        try:
+            minutes = int(minutes)
+        except (TypeError, ValueError):
+            minutes = None
+    period = str(data.get("period") or "unknown").lower()
+    if period not in {"morning", "afternoon", "evening", "unknown"}:
+        period = "unknown"
+    return {
+        "summary": str(data.get("summary") or "").strip() or paragraph.strip()[:120],
+        "bullets": bullets,
+        "minutes": minutes,
+        "period": period,
+    }

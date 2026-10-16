@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Page through open Redmine issues assigned to the API key owner.
-
-Projects in the snapshot are only those that own at least one of those issues.
-Credentials come from .env (REDMINE_URL, REDMINE_API_KEY). The key is sent as
-X-Redmine-API-Key and is never written to data/ or logs.
-"""
+"""Read-only Redmine snapshot: open issues assigned to the API key owner."""
 
 from __future__ import annotations
 
