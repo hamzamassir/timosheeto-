@@ -11,8 +11,9 @@ import urllib.request
 from envfile import ENV_PATH, read_env
 from sync import SNAPSHOT_PATH, RedmineClient, load_env, sync_once, write_snapshot
 
-MODEL = "gemini-2.5-flash"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+DEFAULT_MODEL = "gemini-flash-latest"
+FALLBACK_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 _refresh_lock = threading.Lock()
 
 WORK_NOTE_PROMPT = """You turn a messy work note into a clear log entry.
@@ -49,6 +50,16 @@ def refresh_snapshot() -> dict:
         return snapshot
 
 
+def _gemini_models() -> list[str]:
+    env = read_env()
+    preferred = (env.get("GEMINI_MODEL") or DEFAULT_MODEL).strip()
+    models: list[str] = []
+    for name in (preferred, DEFAULT_MODEL, *FALLBACK_MODELS):
+        if name and name not in models:
+            models.append(name)
+    return models
+
+
 def _gemini_json(prompt: str) -> dict:
     api_key = read_env().get("GEMINI_API_KEY", "")
     if not api_key:
@@ -60,22 +71,40 @@ def _gemini_json(prompt: str) -> dict:
             "responseMimeType": "application/json",
         },
     }
-    request = urllib.request.Request(
-        GEMINI_URL,
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            body = json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Gemini returned HTTP {exc.code}.") from None
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach Gemini: {exc.reason}") from None
+    body: dict | None = None
+    last_error = ""
+    for model in _gemini_models():
+        url = f"{API_BASE}/{model}:generateContent"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                body = json.loads(response.read().decode())
+                break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            try:
+                message = json.loads(detail).get("error", {}).get("message", "")
+            except json.JSONDecodeError:
+                message = detail[:200]
+            last_error = f"{model}: HTTP {exc.code}" + (f" — {message}" if message else "")
+            if exc.code in {404, 429, 503}:
+                continue
+            raise RuntimeError(f"Gemini returned HTTP {exc.code}.") from None
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Could not reach Gemini: {exc.reason}") from None
+    if body is None:
+        raise RuntimeError(
+            "Gemini could not run (model unavailable or busy). "
+            f"Set GEMINI_MODEL in .env. Last error: {last_error}"
+        )
     candidates = body.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") if candidates else None) or []
     raw = "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
