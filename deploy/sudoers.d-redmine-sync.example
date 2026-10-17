@@ -1,0 +1,7 @@
+# Timosheeto (~/redmine-sync) — hamza on x260 only.
+# Install: sudo bash /home/hamza/redmine-sync/deploy/fix-sudoers.sh
+# Must be root:root mode 440 or sudo ignores this file.
+
+hamza ALL=(root) NOPASSWD: /home/hamza/redmine-sync/deploy/restart-services.sh
+hamza ALL=(root) NOPASSWD: /home/hamza/redmine-sync/deploy/install-systemd.sh
+hamza ALL=(root) NOPASSWD: /home/hamza/redmine-sync/deploy/deploy.sh

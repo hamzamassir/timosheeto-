@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REPO="${HOME}/redmine-sync"
-sudo cp "${REPO}/deploy/redmine-sync-web.service" /etc/systemd/system/
-sudo cp "${REPO}/deploy/redmine-sync-bot.service" /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable redmine-sync-web.service redmine-sync-bot.service
-echo "Installed. Start with:"
-echo "  sudo systemctl restart redmine-sync-web redmine-sync-bot"
-echo "  sudo systemctl status redmine-sync-web redmine-sync-bot"
+if [[ "${EUID}" -ne 0 ]]; then
+  exec sudo -n bash "$0" "$@"
+fi
+REPO="/home/hamza/redmine-sync"
+cp "${REPO}/deploy/redmine-sync-web.service" /etc/systemd/system/
+cp "${REPO}/deploy/redmine-sync-bot.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable redmine-sync-web.service redmine-sync-bot.service
+systemctl restart redmine-sync-web.service redmine-sync-bot.service
+echo "redmine-sync-web and redmine-sync-bot are enabled and running."

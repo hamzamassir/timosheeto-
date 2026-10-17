@@ -27,11 +27,18 @@ Redmine stays **read-only**: `data/snapshot.json` is the ticket cache. Your jour
 - **Web** (`python3 web.py`, port **8090**): desktop journal + step-by-step “Log work”. Gemini only on the final paragraph (structured JSON → DB).
 - **Telegram**: `/log` (guided flow), `/today`, `/sync`, `/cancel`, `/help`.
 
-On the X260 after `git pull`:
+On the X260, one-time sudoers (exact paths, no password for deploy after this):
 
 ```bash
-bash ~/redmine-sync/deploy/install-systemd.sh   # once — needs sudo
-sudo systemctl restart redmine-sync-web redmine-sync-bot
+sudo bash ~/redmine-sync/deploy/fix-sudoers.sh
 ```
+
+Then deploy without typing your password:
+
+```bash
+~/redmine-sync/deploy/deploy.sh
+```
+
+That runs `git pull --ff-only` and restarts `redmine-sync-web` + `redmine-sync-bot`.
 
 Port 8090 is separate from the dashboard (`:8080`), qBittorrent (`:8081`), and Musico (`:8765`). Do not use this repo inside `~/monitorzed`.
