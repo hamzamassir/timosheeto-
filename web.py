@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlencode
 
 from brief import load_snapshot, refresh_snapshot, revise_work_note
 from envfile import read_env
-from project_meta import logo_path, save_logo, set_project_color, set_setting
+from project_meta import logo_path, project_color, save_logo, set_project_color, set_setting
 from store import get_entry, init_db, update_entry
 from web_ui import (
     EXTRA_CSS,
@@ -27,7 +27,6 @@ from web_ui import (
     render_settings,
 )
 
-JOURNAL_PATH = re.compile(r"^/journal/(\d+)$")
 from worklog import (
     format_saved,
     issues_for_project,
@@ -36,6 +35,8 @@ from worklog import (
     resolve_project_choice,
     save_work_log,
 )
+
+JOURNAL_PATH = re.compile(r"^/journal/(\d+)$")
 
 HOST = "0.0.0.0"
 PORT = 8090
@@ -282,6 +283,63 @@ table.data th { color: var(--muted); font-size: 11px; text-transform: uppercase;
   font-size: 13px;
 }
 .issue-row a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.project-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.project-pick {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 10px 0 4px;
+  max-width: 900px;
+}
+.project-opt {
+  display: block;
+  margin: 0;
+  cursor: pointer;
+  font-weight: 400;
+}
+.project-opt input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.project-opt-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 14px 14px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--field);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.project-opt:hover .project-opt-card {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.project-opt input:checked + .project-opt-card {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--accent-glow);
+}
+.project-opt input:focus-visible + .project-opt-card {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.project-opt-title { font-weight: 600; font-size: 14px; line-height: 1.3; }
+.project-opt-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.project-pick-empty { margin: 8px 0 0; }
 .issue-row a:hover { text-decoration: underline; }
 .error { color: var(--danger); }
 .ok { color: var(--ok); }
@@ -375,6 +433,35 @@ def wizard_footer(back_href: str | None, primary: str) -> str:
         f"<div class='wizard-footer'><div class='left'>{back}</div>"
         f"<div class='right'>{primary}</div></div>"
     )
+
+
+def project_picker_cards(projects: list[dict], selected: str) -> str:
+    if not projects:
+        return (
+            '<p class="muted project-pick-empty">No projects with your open tickets. '
+            '<a href="/tickets" style="color:var(--accent)">Refresh from Redmine</a> first.</p>'
+        )
+    cards: list[str] = []
+    for index, project in enumerate(projects, start=1):
+        pid = int(project.get("id") or 0)
+        color = project_color(pid)
+        count = int(project.get("assigned_issue_count") or 0)
+        checked = "checked" if selected == str(index) else ""
+        logo = ""
+        if pid and logo_path(pid):
+            logo = f'<img class="project-logo" src="/logo/{pid}" alt="">'
+        else:
+            logo = f'<span class="color-dot" style="background:{esc(color)}"></span>'
+        cards.append(
+            f'<label class="project-opt">'
+            f'<input type="radio" name="project_index" value="{index}" required {checked}>'
+            f'<div class="project-opt-card">'
+            f"{logo}"
+            f'<div><div class="project-opt-title">{esc(project.get("name") or "")}</div>'
+            f'<div class="project-opt-meta">{count} open ticket{"s" if count != 1 else ""}</div>'
+            "</div></div></label>"
+        )
+    return f'<div class="project-pick">{"".join(cards)}</div>'
 
 
 def project_context(form: dict[str, str]) -> str:
@@ -503,16 +590,17 @@ def render_log(
     inner = ""
     footer = ""
     if step == 0:
-        options = "".join(
-            f"<option value='{index}' {'selected' if form.get('project_index') == str(index) else ''}>"
-            f"{esc(p.get('name'))} ({p.get('assigned_issue_count', 0)} open)</option>"
-            for index, p in enumerate(projects, start=1)
-        )
         inner = (
-            f"<label for='project_index'>1 — Choose project</label>"
-            f"<select name='project_index' id='project_index' required>{options}</select>"
+            "<p><strong>1 — Choose project</strong></p>"
+            "<p class='muted'>Tap the project you worked on.</p>"
+            + project_picker_cards(projects, form.get("project_index", ""))
         )
-        footer = wizard_footer(None, '<button class="primary" type="submit" name="action" value="next">Next →</button>')
+        next_btn = (
+            '<button class="primary" type="submit" name="action" value="next">Next →</button>'
+            if projects
+            else ""
+        )
+        footer = wizard_footer(None, next_btn)
     elif step == 1:
         inner = (
             "<p><strong>2 — Link to a ticket?</strong></p>"
