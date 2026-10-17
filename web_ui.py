@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 
@@ -11,14 +12,12 @@ from project_meta import (
     all_project_meta,
     get_gemini_model,
     logo_path,
-    phosphor_for,
     project_color,
 )
 from store import entries_by_date
 
 HEAD_ASSETS = """
 <link href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/duotone/style.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 """
 
@@ -32,13 +31,39 @@ function showToast(msg) {
   clearTimeout(window._toastTimer);
   window._toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy') ? resolve() : reject();
+    } catch (err) {
+      reject(err);
+    } finally {
+      document.body.removeChild(ta);
+    }
+  });
+}
 document.addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-copy]');
+  const btn = e.target.closest('[data-copy-b64]');
   if (!btn) return;
-  const text = btn.getAttribute('data-copy');
-  if (!text) return;
+  let text = '';
   try {
-    await navigator.clipboard.writeText(text);
+    text = decodeURIComponent(escape(atob(btn.getAttribute('data-copy-b64'))));
+  } catch (_) {
+    showToast('Copy failed');
+    return;
+  }
+  try {
+    await copyText(text);
     const icon = btn.querySelector('i');
     if (icon) {
       const prev = icon.className;
@@ -80,10 +105,18 @@ EXTRA_CSS = """
   object-fit: cover;
   border: 1px solid var(--line);
 }
-.ph-badge {
-  font-size: 26px;
-  color: var(--entry-accent);
-  line-height: 1;
+.color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.12);
+}
+.hex-tag {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+  margin-left: 6px;
 }
 .entry-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .copy-line {
@@ -137,12 +170,24 @@ EXTRA_CSS = """
 .chart-card canvas { max-height: 240px; }
 .settings-project {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto 1fr auto;
   gap: 12px;
   align-items: center;
   padding: 12px 0;
   border-bottom: 1px solid var(--line);
 }
+.color-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.hex-input {
+  width: 96px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--field);
+  color: var(--ink);
+}
+.color-picker { width: 40px; height: 32px; padding: 0; border: none; background: transparent; }
 @media (max-width: 1200px) {
   .chart-grid { grid-template-columns: 1fr; }
 }
@@ -154,11 +199,20 @@ def esc(value: object) -> str:
 
 
 def copy_btn(text: str) -> str:
-    safe = esc(text).replace("\n", " ")
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     return (
-        f'<button type="button" class="copy-btn" data-copy="{safe}" '
+        f'<button type="button" class="copy-btn" data-copy-b64="{b64}" '
         f'aria-label="Copy"><i class="ri-file-copy-line"></i></button>'
     )
+
+
+def project_mark(project_id: int | None, color: str) -> str:
+    dot = f'<span class="color-dot" style="background:{esc(color)}"></span>'
+    if project_id and logo_path(int(project_id)):
+        return (
+            f'{dot}<img class="project-logo" src="/logo/{int(project_id)}" alt="">'
+        )
+    return dot
 
 
 def render_layout(
@@ -214,12 +268,7 @@ def nav_item(href: str, remix: str, label: str, active: str, tab: str) -> str:
 def entry_card(entry: dict) -> str:
     pid = entry.get("project_id")
     color = project_color(pid)
-    ph = phosphor_for(pid)
-    logo_html = (
-        f'<img class="project-logo" src="/logo/{int(pid)}" alt="">'
-        if pid and logo_path(int(pid))
-        else f'<i class="ph-duotone {ph} ph-badge" aria-hidden="true"></i>'
-    )
+    mark = project_mark(pid, color)
     tickets = ", ".join(f"#{i}" for i in entry["issue_ids"]) or "No ticket"
     mins = entry["minutes"] if entry["minutes"] is not None else "—"
     period = entry.get("period") or "—"
@@ -229,7 +278,7 @@ def entry_card(entry: dict) -> str:
     return (
         f'<article class="glass-card entry-card" style="--entry-accent:{esc(color)}">'
         '<div class="entry-top">'
-        f'<div class="entry-project">{logo_html}<div>'
+        f'<div class="entry-project">{mark}<div>'
         f'<div><strong>{esc(entry["project_name"])}</strong></div>'
         f'<div class="entry-meta"><i class="ri-time-line"></i> {esc(mins)} min · '
         f'<i class="ri-sun-line"></i> {esc(period)} · <i class="ri-ticket-line"></i> {esc(tickets)}</div>'
@@ -328,13 +377,17 @@ def render_settings(
         logo_src = f"/logo/{pid}" if item["has_logo"] else ""
         logo_preview = (
             f'<img src="{logo_src}" class="project-logo" alt="">' if logo_src else
-            f'<i class="ph-duotone {item["phosphor"]} ph-badge" style="color:{esc(item["color"])}"></i>'
+            f'<span class="color-dot" style="background:{esc(item["color"])}"></span>'
         )
         project_fields.append(
             f'<div class="settings-project">'
             f"{logo_preview}"
             f"<div><strong>{esc(item['name'])}</strong>"
-            f'<div class="muted">Color <input type="color" name="color_{pid}" value="{esc(item["color"])}"></div></div>'
+            f'<div class="color-row">'
+            f'<input type="color" class="color-picker" data-hex="hex_{pid}" value="{esc(item["color"])}">'
+            f'<input type="text" name="color_{pid}" id="hex_{pid}" class="hex-input" '
+            f'value="{esc(item["color"])}" pattern="#[0-9A-Fa-f]{{6}}" maxlength="7" required>'
+            f"</div></div>"
             f'<a class="secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:999px;border:1px solid var(--line)" '
             f'href="#logo-{pid}"><i class="ri-image-add-line"></i> Logo below</a></div>'
         )
@@ -366,6 +419,17 @@ def render_settings(
         + '<div class="row"><button class="primary" type="submit"><i class="ri-save-line"></i> Save</button></div>'
         "</form>"
         + "".join(logo_forms)
+        + """
+    <script>
+    document.querySelectorAll('.color-picker').forEach((picker) => {
+      const hex = document.getElementById(picker.dataset.hex);
+      picker.addEventListener('input', () => { if (hex) hex.value = picker.value.toUpperCase(); });
+      if (hex) hex.addEventListener('input', () => {
+        if (/^#[0-9A-Fa-f]{6}$/.test(hex.value)) picker.value = hex.value;
+      });
+    });
+    </script>
+    """
     )
     return render_layout("settings", body, snapshot_note, base_css)
 

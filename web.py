@@ -40,54 +40,29 @@ PORT = 8090
 PAGE_CSS = """
 :root {
   color-scheme: dark;
-  --ink: #f4f7fb;
-  --muted: rgba(244, 247, 251, 0.68);
-  --line: rgba(255, 255, 255, 0.20);
-  --glass-deep: rgba(255, 255, 255, 0.05);
-  --glass-mid: rgba(255, 255, 255, 0.10);
-  --glass-top: rgba(255, 255, 255, 0.18);
-  --field: rgba(0, 0, 0, 0.35);
-  --accent: #7eb4ff;
-  --accent-glow: rgba(126, 180, 255, 0.22);
-  --danger: #ff9b94;
-  --ok: #8fd9b0;
-  --shadow: 0 24px 60px rgba(88, 130, 255, 0.14);
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --ink: #142033;
-    --muted: rgba(20, 32, 51, 0.65);
-    --line: rgba(255, 255, 255, 0.55);
-    --glass-deep: rgba(255, 255, 255, 0.45);
-    --glass-mid: rgba(255, 255, 255, 0.62);
-    --glass-top: rgba(255, 255, 255, 0.78);
-    --field: rgba(255, 255, 255, 0.55);
-    --accent: #2f5fd4;
-    --accent-glow: rgba(47, 95, 212, 0.18);
-    --danger: #b42318;
-    --ok: #067647;
-    --shadow: 0 20px 50px rgba(40, 70, 140, 0.10);
-  }
+  --ink: #f2f2f7;
+  --muted: rgba(242, 242, 247, 0.55);
+  --line: rgba(255, 255, 255, 0.12);
+  --glass-deep: rgba(28, 28, 30, 0.72);
+  --glass-mid: rgba(44, 44, 46, 0.55);
+  --glass-top: rgba(255, 255, 255, 0.08);
+  --field: rgba(0, 0, 0, 0.45);
+  --accent: #0a84ff;
+  --accent-glow: rgba(10, 132, 255, 0.25);
+  --danger: #ff6961;
+  --ok: #32d74b;
+  --shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
   min-width: 1180px;
   color: var(--ink);
-  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   background:
-    radial-gradient(900px 520px at 8% -8%, rgba(120, 162, 255, 0.42), transparent 58%),
-    radial-gradient(720px 440px at 100% 0%, rgba(186, 124, 255, 0.32), transparent 55%),
-    linear-gradient(155deg, #1b2744 0%, #121826 50%, #1a1030 100%);
-}
-@media (prefers-color-scheme: light) {
-  body {
-    background:
-      radial-gradient(900px 520px at 8% -8%, rgba(120, 162, 255, 0.25), transparent 58%),
-      radial-gradient(720px 440px at 100% 0%, rgba(186, 124, 255, 0.18), transparent 55%),
-      linear-gradient(155deg, #e8ecf5 0%, #dfe6f2 50%, #e9e2f4 100%);
-  }
+    radial-gradient(1200px 600px at 50% -20%, rgba(10, 132, 255, 0.12), transparent 55%),
+    radial-gradient(800px 500px at 100% 100%, rgba(94, 92, 230, 0.10), transparent 50%),
+    #000000;
 }
 .app {
   display: grid;

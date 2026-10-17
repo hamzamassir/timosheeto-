@@ -17,15 +17,17 @@ ALLOWED_MODELS = (
     "gemini-3.5-flash",
     "gemini-pro-latest",
 )
-PHOSPHOR_ICONS = (
-    "ph-briefcase",
-    "ph-folder-open",
-    "ph-code",
-    "ph-users-three",
-    "ph-chart-line-up",
-    "ph-rocket-launch",
-    "ph-gear-six",
-    "ph-globe-hemisphere-west",
+DEFAULT_HEX = (
+    "#5B8DEF",
+    "#9B6BFF",
+    "#3CCB7F",
+    "#F5A524",
+    "#F45B69",
+    "#2EC4B6",
+    "#FF8FAB",
+    "#8ECAE6",
+    "#E9C46A",
+    "#90BE6D",
 )
 
 
@@ -47,13 +49,14 @@ def ensure_meta_tables() -> None:
 
 
 def default_color(project_id: int) -> str:
-    hues = (215, 262, 168, 32, 348, 195, 280, 140, 25, 310)
-    return f"hsl({hues[project_id % len(hues)]} 58% 52%)"
+    return DEFAULT_HEX[project_id % len(DEFAULT_HEX)]
 
 
-def phosphor_for(project_id: int | None) -> str:
-    pid = int(project_id or 0)
-    return PHOSPHOR_ICONS[pid % len(PHOSPHOR_ICONS)]
+def normalize_color(value: str, project_id: int) -> str:
+    cleaned = value.strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", cleaned):
+        return cleaned.upper()
+    return default_color(project_id)
 
 
 def get_setting(key: str, default: str = "") -> str:
@@ -92,7 +95,7 @@ def project_color(project_id: int | None) -> str:
             (int(project_id),),
         ).fetchone()
     if row:
-        return row["color"]
+        return normalize_color(row["color"], int(project_id))
     return default_color(int(project_id))
 
 
@@ -107,7 +110,7 @@ def set_project_color(project_id: int, color: str) -> None:
             VALUES (?, ?, NULL)
             ON CONFLICT(project_id) DO UPDATE SET color = excluded.color
             """,
-            (int(project_id), color.strip()),
+            (int(project_id), color.strip().upper()),
         )
 
 
@@ -158,7 +161,6 @@ def all_project_meta(projects: list[dict]) -> list[dict]:
             "id": int(p.get("id") or 0),
             "name": p.get("name") or "",
             "color": project_color(int(p.get("id") or 0)),
-            "phosphor": phosphor_for(int(p.get("id") or 0)),
             "has_logo": logo_path(int(p.get("id") or 0)) is not None,
         }
         for p in projects
