@@ -14,17 +14,20 @@ from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode
 
-from brief import load_snapshot, refresh_snapshot
+from brief import load_snapshot, refresh_snapshot, revise_work_note
 from envfile import read_env
 from project_meta import logo_path, save_logo, set_project_color, set_setting
-from store import init_db
+from store import get_entry, init_db, update_entry
 from web_ui import (
     EXTRA_CSS,
     render_analytics,
     render_home_page,
+    render_journal_edit,
     render_layout,
     render_settings,
 )
+
+JOURNAL_PATH = re.compile(r"^/journal/(\d+)$")
 from worklog import (
     format_saved,
     issues_for_project,
@@ -604,6 +607,22 @@ class App(BaseHTTPRequestHandler):
             step = int(form.get("step", "0") or 0)
             self._send_html(render_log(self._snapshot(), step, form))
             return
+        journal = JOURNAL_PATH.match(path)
+        if journal:
+            entry = get_entry(int(journal.group(1)))
+            if entry is None:
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+                return
+            saved = (query.get("ok") or [""])[0]
+            self._send_html(
+                render_journal_edit(
+                    entry,
+                    note,
+                    PAGE_CSS,
+                    ok="Saved." if saved else "",
+                )
+            )
+            return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -634,7 +653,80 @@ class App(BaseHTTPRequestHandler):
             form, multi = form_from_body(raw)
             self._handle_log_post(form, multi)
             return
+        journal = JOURNAL_PATH.match(path)
+        if journal:
+            self._handle_journal_post(int(journal.group(1)), form_from_body(raw)[0])
+            return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
+
+    def _handle_journal_post(self, entry_id: int, form: dict[str, str]) -> None:
+        entry = get_entry(entry_id)
+        snap = self._snapshot()
+        note = snapshot_note(snap)
+        if entry is None:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
+        action = form.get("action", "")
+        try:
+            if action == "save":
+                bullets = [line.strip() for line in form.get("bullets", "").splitlines() if line.strip()]
+                if not form.get("summary", "").strip():
+                    raise RuntimeError("Summary is required.")
+                minutes_raw = form.get("minutes", "").strip()
+                minutes = int(minutes_raw) if minutes_raw else None
+                period = form.get("period", "unknown") or "unknown"
+                structured = {
+                    **(entry.get("structured") or {}),
+                    "summary": form["summary"].strip(),
+                    "bullets": bullets,
+                    "minutes": minutes,
+                    "period": period,
+                }
+                update_entry(
+                    entry_id,
+                    work_date=form.get("work_date", entry["work_date"]),
+                    minutes=minutes,
+                    period=period,
+                    raw_description=form.get("raw_description", entry["raw_description"]).strip(),
+                    summary=form["summary"].strip(),
+                    bullets=bullets,
+                    structured=structured,
+                )
+            elif action == "gemini":
+                instruction = form.get("instruction", "").strip()
+                if len(instruction) < 4:
+                    raise RuntimeError("Write what you want to change.")
+                revised = revise_work_note(
+                    project_name=entry["project_name"],
+                    issue_ids=entry["issue_ids"],
+                    current_summary=entry["summary"],
+                    current_bullets=entry["bullets"],
+                    current_minutes=entry["minutes"],
+                    current_period=entry.get("period"),
+                    instruction=instruction,
+                )
+                raw = entry["raw_description"]
+                if instruction not in raw:
+                    raw = f"{raw}\n\n[Edit] {instruction}".strip()
+                structured = {**(entry.get("structured") or {}), **revised}
+                update_entry(
+                    entry_id,
+                    work_date=entry["work_date"],
+                    minutes=revised["minutes"],
+                    period=revised["period"],
+                    raw_description=raw,
+                    summary=revised["summary"],
+                    bullets=revised["bullets"],
+                    structured=structured,
+                )
+            else:
+                raise RuntimeError("Unknown action.")
+        except (RuntimeError, LookupError) as exc:
+            self._send_html(render_journal_edit(entry, note, PAGE_CSS, error=str(exc)))
+            return
+        self.send_response(303)
+        self.send_header("Location", f"/journal/{entry_id}?ok=1")
+        self.end_headers()
 
     def _handle_settings_post(self, form: dict[str, str]) -> None:
         try:

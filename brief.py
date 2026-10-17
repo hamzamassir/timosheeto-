@@ -34,6 +34,30 @@ Return ONLY valid JSON (no markdown fences) with this shape:
 Use the user's language when natural. Do not invent ticket ids. If time is unclear, use null for minutes and "unknown" for period.
 """
 
+REVISE_PROMPT = """You revise an existing work log entry.
+
+Project: {project_name}
+Tickets: {tickets}
+Current entry:
+- summary: {summary}
+- bullets: {bullets}
+- minutes: {minutes}
+- period: {period}
+
+The user asks for this change (or provides replacement text):
+{instruction}
+
+Return ONLY valid JSON:
+{{
+  "summary": "one short sentence",
+  "bullets": ["2 to 5 bullets in past tense"],
+  "minutes": null or integer,
+  "period": "morning" | "afternoon" | "evening" | "unknown"
+}}
+
+Keep true facts from the current entry unless the user clearly replaces them. Do not invent ticket ids.
+"""
+
 
 def load_snapshot() -> dict:
     if not SNAPSHOT_PATH.is_file():
@@ -138,7 +162,10 @@ def structure_work_note(
         tickets=tickets,
         paragraph=paragraph.strip(),
     )
-    data = _gemini_json(prompt)
+    return _normalize_structured(_gemini_json(prompt), paragraph.strip()[:120])
+
+
+def _normalize_structured(data: dict, fallback_summary: str) -> dict:
     bullets = data.get("bullets") or []
     if not isinstance(bullets, list):
         bullets = [str(bullets)]
@@ -153,8 +180,31 @@ def structure_work_note(
     if period not in {"morning", "afternoon", "evening", "unknown"}:
         period = "unknown"
     return {
-        "summary": str(data.get("summary") or "").strip() or paragraph.strip()[:120],
+        "summary": str(data.get("summary") or "").strip() or fallback_summary[:120],
         "bullets": bullets,
         "minutes": minutes,
         "period": period,
     }
+
+
+def revise_work_note(
+    *,
+    project_name: str,
+    issue_ids: list[int],
+    current_summary: str,
+    current_bullets: list[str],
+    current_minutes: int | None,
+    current_period: str | None,
+    instruction: str,
+) -> dict:
+    tickets = ", ".join(f"#{i}" for i in issue_ids) if issue_ids else "none"
+    prompt = REVISE_PROMPT.format(
+        project_name=project_name,
+        tickets=tickets,
+        summary=current_summary,
+        bullets="; ".join(current_bullets),
+        minutes=current_minutes if current_minutes is not None else "null",
+        period=current_period or "unknown",
+        instruction=instruction.strip(),
+    )
+    return _normalize_structured(_gemini_json(prompt), current_summary)

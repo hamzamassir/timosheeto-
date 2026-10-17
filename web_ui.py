@@ -119,6 +119,26 @@ EXTRA_CSS = """
   margin-left: 6px;
 }
 .entry-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.edit-link {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+.edit-link:hover { text-decoration: underline; }
+.entry-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.edit-grid label { display: block; margin-top: 12px; }
+.edit-grid textarea { min-height: 88px; }
+.edit-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 14px;
+}
+@media (max-width: 1100px) { .edit-split { grid-template-columns: 1fr; } }
 .copy-line {
   display: flex;
   align-items: flex-start;
@@ -283,8 +303,10 @@ def entry_card(entry: dict) -> str:
         f'<div class="entry-meta"><i class="ri-time-line"></i> {esc(mins)} min · '
         f'<i class="ri-sun-line"></i> {esc(period)} · <i class="ri-ticket-line"></i> {esc(tickets)}</div>'
         "</div></div>"
+        '<div class="entry-actions">'
         f'<span class="pill">{esc(entry["created_at"][:16].replace("T", " "))}</span>'
-        "</div>"
+        f'<a class="edit-link" href="/journal/{entry["id"]}"><i class="ri-edit-line"></i> Edit</a>'
+        "</div></div>"
         f'<div class="copy-line summary-line"><span>{esc(entry["summary"])}</span>'
         f'{copy_btn(entry["summary"])}</div>'
         f"{bullets}"
@@ -436,3 +458,62 @@ def render_settings(
 
 def render_home_page(snapshot_note: str, base_css: str, error: str = "", ok: str = "") -> str:
     return render_layout("home", render_home(snapshot_note, error, ok), snapshot_note, base_css)
+
+
+def render_journal_edit(
+    entry: dict,
+    snapshot_note: str,
+    base_css: str,
+    error: str = "",
+    ok: str = "",
+) -> str:
+    tickets = ", ".join(f"#{i}" for i in entry["issue_ids"]) or "No ticket"
+    bullets_text = "\n".join(entry["bullets"])
+    minutes = entry["minutes"] if entry["minutes"] is not None else ""
+    period = entry.get("period") or "unknown"
+    err = f'<p class="error">{esc(error)}</p>' if error else ""
+    okp = f'<p class="ok">{esc(ok)}</p>' if ok else ""
+    body = (
+        '<div class="page-head"><div>'
+        f'<h2><i class="ri-edit-line"></i> Edit entry #{entry["id"]}</h2>'
+        f'<p class="muted">{esc(entry["project_name"])} · {esc(tickets)}</p>'
+        "</div>"
+        '<a class="back-link" href="/"><i class="ri-arrow-left-line"></i> Journal</a>'
+        "</div>"
+        + err
+        + okp
+        + '<div class="edit-split">'
+        '<form class="glass-card edit-grid" method="post" action="'
+        f'/journal/{entry["id"]}">'
+        '<input type="hidden" name="action" value="save">'
+        f'<label for="work_date">Date</label>'
+        f'<input type="date" name="work_date" id="work_date" value="{esc(entry["work_date"])}">'
+        '<label for="minutes">Minutes</label>'
+        f'<input type="number" name="minutes" id="minutes" min="0" step="5" value="{esc(minutes)}">'
+        '<label for="period">Period</label>'
+        f'<select name="period" id="period">'
+        + "".join(
+            f'<option value="{p}"{" selected" if p == period else ""}>{p}</option>'
+            for p in ("morning", "afternoon", "evening", "unknown")
+        )
+        + "</select>"
+        '<label for="summary">Summary</label>'
+        f'<input type="text" name="summary" id="summary" value="{esc(entry["summary"])}">'
+        '<label for="bullets">Bullets (one per line)</label>'
+        f'<textarea name="bullets" id="bullets">{esc(bullets_text)}</textarea>'
+        '<label for="raw_description">Original note</label>'
+        f'<textarea name="raw_description" id="raw_description">{esc(entry["raw_description"])}</textarea>'
+        '<div class="row"><button class="primary" type="submit"><i class="ri-save-line"></i> Save</button></div>'
+        "</form>"
+        '<form class="glass-card edit-grid" method="post" action="'
+        f'/journal/{entry["id"]}">'
+        '<input type="hidden" name="action" value="gemini">'
+        "<h3><i class=\"ri-robot-2-line\"></i> Rewrite with Gemini</h3>"
+        '<p class="muted">Describe the change, or paste a new paragraph.</p>'
+        '<label for="instruction">Instruction</label>'
+        '<textarea name="instruction" id="instruction" placeholder="Example: shorten bullets, add that we fixed login on client side, set 2h…"></textarea>'
+        '<div class="row"><button class="primary" type="submit"><i class="ri-magic-line"></i> Apply with Gemini</button></div>'
+        "</form>"
+        "</div>"
+    )
+    return render_layout("home", body, snapshot_note, base_css)

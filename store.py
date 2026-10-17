@@ -131,6 +131,46 @@ def entries_by_date(limit_days: int = 14) -> dict[str, list[dict]]:
     return {day: grouped[day] for day in days}
 
 
+def get_entry(entry_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM work_entries WHERE id = ?", (entry_id,)).fetchone()
+    return _row_to_entry(row) if row else None
+
+
+def update_entry(
+    entry_id: int,
+    *,
+    work_date: str,
+    minutes: int | None,
+    period: str | None,
+    raw_description: str,
+    summary: str,
+    bullets: list[str],
+    structured: dict[str, Any],
+) -> None:
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE work_entries SET
+                work_date = ?, minutes = ?, period = ?, raw_description = ?,
+                summary = ?, bullets = ?, structured = ?
+            WHERE id = ?
+            """,
+            (
+                work_date,
+                minutes,
+                period,
+                raw_description,
+                summary,
+                json.dumps(bullets, ensure_ascii=False),
+                json.dumps(structured, ensure_ascii=False),
+                entry_id,
+            ),
+        )
+        if cur.rowcount == 0:
+            raise LookupError("Entry not found.")
+
+
 def _row_to_entry(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
