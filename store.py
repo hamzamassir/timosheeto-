@@ -21,6 +21,9 @@ def connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    from project_meta import ensure_meta_tables
+
+    ensure_meta_tables()
     with connect() as conn:
         conn.executescript(
             """

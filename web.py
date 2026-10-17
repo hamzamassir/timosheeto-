@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import base64
+import cgi
 import html
+import mimetypes
 import os
+import re
 import secrets
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +16,15 @@ from urllib.parse import parse_qs, urlencode
 
 from brief import load_snapshot, refresh_snapshot
 from envfile import read_env
-from store import entries_by_date, init_db
+from project_meta import logo_path, save_logo, set_project_color, set_setting
+from store import init_db
+from web_ui import (
+    EXTRA_CSS,
+    render_analytics,
+    render_home_page,
+    render_layout,
+    render_settings,
+)
 from worklog import (
     format_saved,
     issues_for_project,
@@ -25,11 +36,6 @@ from worklog import (
 
 HOST = "0.0.0.0"
 PORT = 8090
-
-ICON_JOURNAL = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 5v14M8 9h8M8 13h6"/></svg>"""
-ICON_LOG = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>"""
-ICON_TICKETS = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>"""
-ICON_REFRESH = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>"""
 
 PAGE_CSS = """
 :root {
@@ -416,95 +422,8 @@ def snapshot_note(snapshot: dict | None) -> str:
     return f"{snapshot.get('issue_total', 0)} open · {snapshot.get('project_total', 0)} projects"
 
 
-def nav_link(href: str, icon: str, label: str, active: str, tab: str) -> str:
-    cls = "nav-item active" if active == tab else "nav-item"
-    return f'<a href="{href}" class="{cls}"><span class="ico">{icon}</span><span>{esc(label)}</span></a>'
-
-
-def render_layout(active: str, body: str, snapshot: dict | None = None) -> str:
-    note = snapshot_note(snapshot)
-    nav = (
-        nav_link("/", ICON_JOURNAL, "Journal", active, "home")
-        + nav_link("/log", ICON_LOG, "Log work", active, "log")
-        + nav_link("/tickets", ICON_TICKETS, "Tickets", active, "tickets")
-    )
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Timosheeto</title>
-  <style>{PAGE_CSS}</style>
-</head>
-<body>
-  <div class="app">
-    <aside class="sidebar-wrap">
-      <div class="sidebar">
-        <div class="layer"></div>
-        <div class="layer mid"></div>
-        <div class="sidebar-inner">
-          <div class="brand">
-            <div class="brand-mark">T</div>
-            <div>
-              <h1>Timosheeto</h1>
-              <p class="sub">{esc(note)}</p>
-            </div>
-          </div>
-          {nav}
-        </div>
-      </div>
-    </aside>
-    <main>{body}</main>
-  </div>
-</body>
-</html>
-"""
-
-
-def render_home(snapshot: dict | None, error: str = "", ok: str = "") -> str:
-    grouped = entries_by_date()
-    blocks: list[str] = []
-    if error:
-        blocks.append(f"<p class='error glass-card'>{esc(error)}</p>")
-    if ok:
-        blocks.append(f"<p class='ok glass-card'>{esc(ok)}</p>")
-    if not grouped:
-        blocks.append(
-            "<div class='glass-card empty'>"
-            "<p>No journal entries yet.</p>"
-            "<p class='muted'>Use <strong>Log work</strong> or Telegram <code>/log</code>.</p>"
-            "</div>"
-        )
-    else:
-        for day, entries in grouped.items():
-            rows = []
-            for entry in entries:
-                tickets = ", ".join(f"#{i}" for i in entry["issue_ids"]) or "—"
-                mins = entry["minutes"] if entry["minutes"] is not None else "—"
-                bullets = "".join(f"<li>{esc(b)}</li>" for b in entry["bullets"])
-                rows.append(
-                    "<tr>"
-                    f"<td>{esc(entry['created_at'][:16].replace('T', ' '))}</td>"
-                    f"<td>{esc(entry['period'] or '—')}</td>"
-                    f"<td>{esc(entry['project_name'])}</td>"
-                    f"<td>{esc(tickets)}</td>"
-                    f"<td>{esc(mins)}</td>"
-                    f"<td><strong>{esc(entry['summary'])}</strong>"
-                    f"<ul class='bullets'>{bullets}</ul></td>"
-                    "</tr>"
-                )
-            blocks.append(
-                f"<div class='day-title'>{esc(day)}</div>"
-                "<div class='glass-card'><table class='data'>"
-                "<thead><tr><th>Logged</th><th>Period</th><th>Project</th>"
-                "<th>Tickets</th><th>Min</th><th>Summary</th></tr></thead>"
-                f"<tbody>{''.join(rows)}</tbody></table></div>"
-            )
-    body = (
-        "<div class='page-head'><div><h2>Journal</h2>"
-        "<p class='muted'>What you did — stored locally in SQLite</p></div></div>"
-        + "".join(blocks)
-    )
-    return render_layout("home", body, snapshot)
+def page(active: str, body: str, snapshot: dict | None) -> str:
+    return render_layout(active, body, snapshot_note(snapshot), PAGE_CSS + EXTRA_CSS)
 
 
 def render_tickets(snapshot: dict | None, error: str = "", ok: str = "") -> str:
@@ -515,8 +434,8 @@ def render_tickets(snapshot: dict | None, error: str = "", ok: str = "") -> str:
         blocks.append(f"<p class='ok'>{esc(ok)}</p>")
 
     refresh_btn = (
-        f"<form method='post' action='/sync' style='margin:0'>"
-        f"<button type='submit' class='primary'><span class='ico'>{ICON_REFRESH}</span>"
+        '<form method="post" action="/sync" style="margin:0">'
+        '<button type="submit" class="primary"><i class="ri-refresh-line"></i> '
         "Refresh from Redmine</button></form>"
     )
 
@@ -564,12 +483,12 @@ def render_tickets(snapshot: dict | None, error: str = "", ok: str = "") -> str:
     synced = esc(format_when(snapshot.get("synced_at") if snapshot else None))
     body = (
         "<div class='page-head'>"
-        "<div><h2>Tickets</h2>"
+        '<div><h2><i class="ri-ticket-2-line"></i> Tickets</h2>'
         f"<p class='muted'>Cached sync · last refresh {synced}</p></div>"
         f"{refresh_btn}</div>"
         + "".join(blocks)
     )
-    return render_layout("tickets", body, snapshot)
+    return page("tickets", body, snapshot)
 
 
 def render_log(
@@ -584,10 +503,10 @@ def render_log(
             "<div class='page-head'><h2>Saved</h2></div>"
             f"<div class='glass-card'><pre style='white-space:pre-wrap;margin:0;font:inherit'>"
             f"{esc(format_saved(saved))}</pre></div>"
-            "<p class='row'><a class='nav-item' style='display:inline-flex;width:auto' href='/log'>"
-            f"<span class='ico'>{ICON_LOG}</span> Log another</a></p>"
+            '<p class="row"><a class="nav-item" style="display:inline-flex;width:auto" href="/log">'
+            '<i class="ri-edit-2-line"></i> Log another</a></p>'
         )
-        return render_layout("log", body, snapshot)
+        return page("log", body, snapshot)
 
     projects = []
     if snapshot:
@@ -669,7 +588,7 @@ def render_log(
         f"<form class='glass-card' method='post' action='/log'>"
         f"{wizard_hiddens(form, step)}{ctx}{inner}{footer}</form>"
     )
-    return render_layout("log", body, snapshot)
+    return page("log", body, snapshot)
 
 
 class App(BaseHTTPRequestHandler):
@@ -681,8 +600,21 @@ class App(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
         ok = (query.get("ok") or [""])[0]
+        snap = self._snapshot()
+        note = snapshot_note(snap)
         if path == "/":
-            self._send_html(render_home(self._snapshot(), ok="Snapshot refreshed." if ok else ""))
+            self._send_html(render_home_page(note, PAGE_CSS, ok="Snapshot refreshed." if ok else ""))
+            return
+        if path == "/analytics":
+            self._send_html(render_analytics(note, PAGE_CSS))
+            return
+        if path == "/settings":
+            self._send_html(
+                render_settings(snap, note, PAGE_CSS, ok="Settings saved." if ok else "")
+            )
+            return
+        if path.startswith("/logo/"):
+            self._serve_logo(path)
             return
         if path == "/tickets":
             self._send_html(
@@ -703,6 +635,10 @@ class App(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = self.path.split("?", 1)[0]
+        ctype = self.headers.get("Content-Type", "")
+        if path == "/settings/logo" and "multipart/form-data" in ctype:
+            self._handle_logo_upload()
+            return
         length = int(self.headers.get("Content-Length") or "0")
         raw = self.rfile.read(length).decode("utf-8", errors="replace")
         if path == "/sync":
@@ -716,11 +652,69 @@ class App(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if path == "/settings":
+            self._handle_settings_post(form_from_body(raw)[0])
+            return
         if path == "/log":
             form, multi = form_from_body(raw)
             self._handle_log_post(form, multi)
             return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
+
+    def _handle_settings_post(self, form: dict[str, str]) -> None:
+        try:
+            model = form.get("gemini_model", "").strip()
+            if model:
+                set_setting("gemini_model", model)
+            for key, value in form.items():
+                if key.startswith("color_") and re.fullmatch(r"color_\d+", key):
+                    set_project_color(int(key.split("_", 1)[1]), value)
+        except (ValueError, RuntimeError) as exc:
+            self._send_html(render_settings(self._snapshot(), snapshot_note(self._snapshot()), PAGE_CSS, error=str(exc)))
+            return
+        self.send_response(303)
+        self.send_header("Location", "/settings?ok=1")
+        self.end_headers()
+
+    def _handle_logo_upload(self) -> None:
+        try:
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                    "CONTENT_LENGTH": self.headers.get("Content-Length", ""),
+                },
+            )
+            project_id = int(form.getvalue("project_id") or "0")
+            fileitem = form["logo"]
+            if not fileitem.file:
+                raise ValueError("Choose an image file.")
+            data = fileitem.file.read()
+            save_logo(project_id, data, fileitem.type or "application/octet-stream")
+        except (ValueError, TypeError) as exc:
+            snap = self._snapshot()
+            self._send_html(render_settings(snap, snapshot_note(snap), PAGE_CSS, error=str(exc)))
+            return
+        self.send_response(303)
+        self.send_header("Location", "/settings?ok=1")
+        self.end_headers()
+
+    def _serve_logo(self, path: str) -> None:
+        if not self._authorized():
+            return
+        match = re.fullmatch(r"/logo/(\d+)", path.split("?", 1)[0])
+        if not match:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
+        file_path = logo_path(int(match.group(1)))
+        if not file_path:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
+        content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        body = file_path.read_bytes()
+        self._send(200, body, content_type)
 
     def _handle_log_post(self, form: dict[str, str], multi: dict[str, list[str]]) -> None:
         step = int(form.get("step", "0") or 0)

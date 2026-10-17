@@ -51,8 +51,9 @@ def refresh_snapshot() -> dict:
 
 
 def _gemini_models() -> list[str]:
-    env = read_env()
-    preferred = (env.get("GEMINI_MODEL") or DEFAULT_MODEL).strip()
+    from project_meta import get_gemini_model
+
+    preferred = get_gemini_model().strip() or DEFAULT_MODEL
     models: list[str] = []
     for name in (preferred, DEFAULT_MODEL, *FALLBACK_MODELS):
         if name and name not in models:
